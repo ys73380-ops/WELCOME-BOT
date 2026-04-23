@@ -1,0 +1,79 @@
+====================================================
+        GENDER WELCOME BOT — PROJECT PROFILE
+====================================================
+
+PROJECT NAME   : Gender Welcome Bot
+FILE           : b.py
+LANGUAGE       : Python 3
+TYPE           : Telegram Bot
+PURPOSE        : Telegram groups mein naye members ko
+                 unke gender ke hisaab se welcome karna
+
+----------------------------------------------------
+BOT KYA KARTA HAI?
+----------------------------------------------------
+- Jab koi naya member group join karta hai, bot
+  automatically unka naam dekhkar gender detect karta
+  hai (Male / Female / Neutral)
+- Gender ke hisaab se alag-alag welcome message
+  aur video bhejta hai
+- Agar gender detect na ho (Neutral), to member
+  ko buttons dikhata hai: "Ladka Hoon" / "Ladki Hoon"
+- Admins DM se bhi apna group manage kar sakte hain
+  (connect/disconnect feature)
+
+----------------------------------------------------
+MAIN FEATURES
+----------------------------------------------------
+1. Gender Detection (3-Layer System)
+   - Layer 1 : Name list se exact match (MALE_NAMES / FEMALE_NAMES)
+   - Layer 2 : Name ke andar substring match
+   - Layer 3 : Name endings se detect (e.g. -devi, -raj)
+
+2. Welcome Message System
+   - Male, Female, Neutral — teeno ke liye alag message
+   - Variables support: {name}, {username}, {mention}, {gender}
+
+3. Welcome Video System
+   - Har gender ke liye multiple videos store ho sakti hain
+   - Random video select hoti hai welcome par
+
+4. Admin Commands (DM + Group dono se)
+   - Group connect/disconnect
+   - Welcome message set karna
+   - Video welcome set karna
+   - Settings dekhna aur reset karna
+
+5. Inline Button Callback
+   - Neutral member khud apna gender choose kare
+   - Sirf wahi member button press kar sakta hai
+
+----------------------------------------------------
+COMMANDS LIST
+----------------------------------------------------
+/start            - Bot ka intro aur help
+/connect          - Group ko bot se connect karo
+/disconnect       - Connection hatao
+/setwelcome       - Welcome message set karo
+/setvideowelcome  - Welcome video set karo
+/showwelcome      - Current settings dekho
+/resetwelcome     - Saari settings reset karo
+/testgender       - Kisi naam ka gender test karo
+/admincheck       - Apna admin status check karo
+
+----------------------------------------------------
+DATA STORAGE
+----------------------------------------------------
+- File    : bot_data.json (local JSON file)
+- Format  : Per-group settings (messages + videos)
+- Connections map: User ID → Group Chat ID
+
+----------------------------------------------------
+DEVELOPER NOTES
+----------------------------------------------------
+- BOT_TOKEN environment variable se liya jaata hai
+- Logging enabled (INFO level)
+- Unicode normalization for Hindi/Urdu names
+- Fully async (python-telegram-bot v20+)
+
+====================================================
