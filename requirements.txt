@@ -6,7 +6,7 @@
 # ============================================
 
 # Telegram Bot Framework (v20+ async version)
-python-telegram-bot==20.7
+python-telegram-bot>=21.0,<22.0
 
 # ============================================
 # STANDARD LIBRARY (No install needed)
