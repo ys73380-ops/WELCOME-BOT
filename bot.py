@@ -141,13 +141,21 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_name(name: str) -> str:
-    try:
-        normalized = unicodedata.normalize('NFKD', name)
-        ascii_name = ''.join(c for c in normalized if not unicodedata.combining(c))
-        cleaned = ''.join(c for c in ascii_name if c.isprintable())
-        return cleaned if cleaned.strip() else name
-    except:
-        return name
+    """Fancy Unicode fonts ko normal ASCII mein convert karo"""
+    if not name:
+        return ''
+    result = ''
+    for char in str(name):
+        if char in FANCY_CHAR_MAP:
+            result += FANCY_CHAR_MAP[char]
+        elif ord(char) < 128:
+            result += char
+        else:
+            result += char
+    normalized = unicodedata.normalize('NFKD', result)
+    ascii_name = ''.join(c for c in normalized if not unicodedata.combining(c))
+    cleaned = ''.join(c for c in ascii_name if c.isprintable())
+    return cleaned.strip() if cleaned.strip() else name
 
 
 def detect_gender(name: str) -> str:
