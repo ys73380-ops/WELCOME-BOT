@@ -158,6 +158,67 @@ def normalize_name(name: str) -> str:
     return cleaned.strip() if cleaned.strip() else name
 
 
+FANCY_CHAR_MAP = {
+    # Bold lowercase
+    '𝐚':'a','𝐛':'b','𝐜':'c','𝐝':'d','𝐞':'e','𝐟':'f','𝐠':'g','𝐡':'h',
+    '𝐢':'i','𝐣':'j','𝐤':'k','𝐥':'l','𝐦':'m','𝐧':'n','𝐨':'o','𝐩':'p',
+    '𝐪':'q','𝐫':'r','𝐬':'s','𝐭':'t','𝐮':'u','𝐯':'v','𝐰':'w','𝐱':'x',
+    '𝐲':'y','𝐳':'z',
+    # Bold uppercase
+    '𝐀':'A','𝐁':'B','𝐂':'C','𝐃':'D','𝐄':'E','𝐅':'F','𝐆':'G','𝐇':'H',
+    '𝐈':'I','𝐉':'J','𝐊':'K','𝐋':'L','𝐌':'M','𝐍':'N','𝐎':'O','𝐏':'P',
+    '𝐐':'Q','𝐑':'R','𝐒':'S','𝐓':'T','𝐔':'U','𝐕':'V','𝐖':'W','𝐗':'X',
+    '𝐘':'Y','𝐙':'Z',
+    # Italic lowercase
+    '𝑎':'a','𝑏':'b','𝑐':'c','𝑑':'d','𝑒':'e','𝑓':'f','𝑔':'g','𝒉':'h',
+    '𝑖':'i','𝑗':'j','𝑘':'k','𝑙':'l','𝑚':'m','𝑛':'n','𝑜':'o','𝑝':'p',
+    '𝑞':'q','𝑟':'r','𝑠':'s','𝑡':'t','𝑢':'u','𝑣':'v','𝑤':'w','𝑥':'x',
+    '𝑦':'y','𝑧':'z',
+    # Sans-serif bold lowercase
+    '𝗮':'a','𝗯':'b','𝗰':'c','𝗱':'d','𝗲':'e','𝗳':'f','𝗴':'g','𝗵':'h',
+    '𝗶':'i','𝗷':'j','𝗸':'k','𝗹':'l','𝗺':'m','𝗻':'n','𝗼':'o','𝗽':'p',
+    '𝗾':'q','𝗿':'r','𝘀':'s','𝘁':'t','𝘂':'u','𝘃':'v','𝘄':'w','𝘅':'x',
+    '𝘆':'y','𝘇':'z',
+    # Sans-serif bold uppercase
+    '𝗔':'A','𝗕':'B','𝗖':'C','𝗗':'D','𝗘':'E','𝗙':'F','𝗚':'G','𝗛':'H',
+    '𝗜':'I','𝗝':'J','𝗞':'K','𝗟':'L','𝗠':'M','𝗡':'N','𝗢':'O','𝗣':'P',
+    '𝗤':'Q','𝗥':'R','𝗦':'S','𝗧':'T','𝗨':'U','𝗩':'V','𝗪':'W','𝗫':'X',
+    '𝗬':'Y','𝗭':'Z',
+    # Circled lowercase
+    'ⓐ':'a','ⓑ':'b','ⓒ':'c','ⓓ':'d','ⓔ':'e','ⓕ':'f','ⓖ':'g','ⓗ':'h',
+    'ⓘ':'i','ⓙ':'j','ⓚ':'k','ⓛ':'l','ⓜ':'m','ⓝ':'n','ⓞ':'o','ⓟ':'p',
+    'ⓠ':'q','ⓡ':'r','ⓢ':'s','ⓣ':'t','ⓤ':'u','ⓥ':'v','ⓦ':'w','ⓧ':'x',
+    'ⓨ':'y','ⓩ':'z',
+    # Fullwidth lowercase
+    'ａ':'a','ｂ':'b','ｃ':'c','ｄ':'d','ｅ':'e','ｆ':'f','ｇ':'g','ｈ':'h',
+    'ｉ':'i','ｊ':'j','ｋ':'k','ｌ':'l','ｍ':'m','ｎ':'n','ｏ':'o','ｐ':'p',
+    'ｑ':'q','ｒ':'r','ｓ':'s','ｔ':'t','ｕ':'u','ｖ':'v','ｗ':'w','ｘ':'x',
+    'ｙ':'y','ｚ':'z',
+    # Fullwidth uppercase
+    'Ａ':'A','Ｂ':'B','Ｃ':'C','Ｄ':'D','Ｅ':'E','Ｆ':'F','Ｇ':'G','Ｈ':'H',
+    'Ｉ':'I','Ｊ':'J','Ｋ':'K','Ｌ':'L','Ｍ':'M','Ｎ':'N','Ｏ':'O','Ｐ':'P',
+    'Ｑ':'Q','Ｒ':'R','Ｓ':'S','Ｔ':'T','Ｕ':'U','Ｖ':'V','Ｗ':'W','Ｘ':'X',
+    'Ｙ':'Y','Ｚ':'Z',
+}
+
+def normalize_name(name: str) -> str:
+    """Fancy Unicode fonts ko normal ASCII mein convert karo"""
+    if not name:
+        return ''
+    result = ''
+    for char in str(name):
+        if char in FANCY_CHAR_MAP:
+            result += FANCY_CHAR_MAP[char]
+        elif ord(char) < 128:
+            result += char
+        else:
+            result += char
+    normalized = unicodedata.normalize('NFKD', result)
+    ascii_name = ''.join(c for c in normalized if not unicodedata.combining(c))
+    cleaned = ''.join(c for c in ascii_name if c.isprintable())
+    return cleaned.strip() if cleaned.strip() else name
+
+
 def detect_gender(name: str) -> str:
     normal_name = normalize_name(name)
     name_lower = normal_name.lower().strip()
