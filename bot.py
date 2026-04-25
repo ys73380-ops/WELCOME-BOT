@@ -13,7 +13,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-import os
 from pymongo import MongoClient
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "your_token_here")
