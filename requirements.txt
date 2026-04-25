@@ -7,7 +7,7 @@
 
 # Telegram Bot Framework (v20+ async version)
 python-telegram-bot>=21.0,<22.0
-pymongo[srv]
+
 # ============================================
 # STANDARD LIBRARY (No install needed)
 # ============================================
