@@ -10,12 +10,15 @@ try:
     if _API_KEY:
         _CLIENT = Groq(api_key=_API_KEY)
         _AI_AVAILABLE = True
+        print("✅ AI Gender Detection: GROQ Active")
     else:
         _CLIENT = None
         _AI_AVAILABLE = False
+        print("⚠️ AI Gender Detection: Fallback mode (GROQ_API_KEY missing)")
 except ImportError:
     _CLIENT = None
     _AI_AVAILABLE = False
+    print("⚠️ Groq not installed - using fallback detection")
 
 MODEL = "llama-3.1-8b-instant"
 
