@@ -1,491 +1,483 @@
-const { Telegraf, Markup } = require('telegraf');
-const fs = require('fs');
-const path = require('path');
+import os
+import json
+import asyncio
+from datetime import datetime
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-// ============================================
-// CONFIGURATION
-// ============================================
-const BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE';  // Replace with your bot token from @BotFather
+# Load environment variables
+load_dotenv()
 
-// Database file to store videos
-const DATABASE_FILE = path.join(__dirname, 'videos.json');
+# Configuration
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN not found in .env file!")
+    exit(1)
 
-// Video database
-let videoDatabase = {
-    girls: [],
-    boys: []
-};
+# Database file
+DATABASE_FILE = 'videos.json'
 
-// Load database
-function loadDatabase() {
-    if (fs.existsSync(DATABASE_FILE)) {
-        try {
-            const data = fs.readFileSync(DATABASE_FILE, 'utf8');
-            videoDatabase = JSON.parse(data);
-            console.log('✅ Database loaded');
-        } catch (err) {
-            console.error('Error loading database:', err);
-        }
-    } else {
-        saveDatabase();
-    }
+# Video database structure
+video_database = {
+    'girls': [],  # List of {file_id, caption, added_by, added_at}
+    'boys': []
 }
 
-function saveDatabase() {
-    try {
-        fs.writeFileSync(DATABASE_FILE, JSON.stringify(videoDatabase, null, 2));
-        console.log('💾 Database saved');
-    } catch (err) {
-        console.error('Error saving database:', err);
-    }
-}
-
-// Check if user is Group Admin or Owner
-async function isGroupAdmin(ctx, userId) {
-    try {
-        const chatMember = await ctx.getChatMember(userId);
-        return chatMember.status === 'administrator' || chatMember.status === 'creator';
-    } catch (err) {
-        return false;
-    }
-}
-
-// ============================================
-// BOT INITIALIZATION
-// ============================================
-const bot = new Telegraf(BOT_TOKEN);
-loadDatabase();
-
-// Store welcome message and video to be sent in group
-let welcomeSettings = {
-    girls: {
-        message: "🌸 Welcome to the group, {name}! You have been identified as a Female.\n\nEnjoy your stay! 🎉",
-        videoFileId: null
+# Welcome settings
+welcome_settings = {
+    'girls': {
+        'message': "🌸 Welcome {name} to the group! 🎉\n\nYou have been identified as a Female.\nEnjoy your stay!",
+        'video_file_id': None
     },
-    boys: {
-        message: "🔥 Welcome to the group, {name}! You have been identified as a Male.\n\nEnjoy your stay! 🎉",
-        videoFileId: null
+    'boys': {
+        'message': "🔥 Welcome {name} to the group! 🎉\n\nYou have been identified as a Male.\nEnjoy your stay!",
+        'video_file_id': None
     }
-};
+}
 
-// Store temporary admin session for setting videos
-const adminSession = new Map(); // userId -> { gender, step }
+# Admin session storage
+admin_session = {}
 
-// ============================================
-// WHEN BOT ADDS TO GROUP
-// ============================================
-bot.on('my_chat_member', async (ctx) => {
-    const newStatus = ctx.myChatMember.new_chat_member.status;
-    const chatId = ctx.chat.id;
-    const chatType = ctx.chat.type;
+# Load database
+def load_database():
+    global video_database
+    if os.path.exists(DATABASE_FILE):
+        try:
+            with open(DATABASE_FILE, 'r') as f:
+                video_database = json.load(f)
+            print("✅ Database loaded")
+            print(f"📹 Girls videos: {len(video_database.get('girls', []))}")
+            print(f"📹 Boys videos: {len(video_database.get('boys', []))}")
+        except Exception as e:
+            print(f"Error loading database: {e}")
+    else:
+        save_database()
+
+def save_database():
+    try:
+        with open(DATABASE_FILE, 'w') as f:
+            json.dump(video_database, f, indent=2)
+        print("💾 Database saved")
+    except Exception as e:
+        print(f"Error saving database: {e}")
+
+# Check if user is group admin
+async def is_group_admin(update: Update, user_id: int) -> bool:
+    try:
+        chat_member = await update.effective_chat.get_member(user_id)
+        return chat_member.status in ['administrator', 'creator']
+    except:
+        return False
+
+# Send welcome videos
+async def send_welcome_videos(context: ContextTypes.DEFAULT_TYPE, user_id: int, gender: str):
+    videos = video_database.get(gender, [])
     
-    if ((newStatus === 'member' || newStatus === 'administrator') && (chatType === 'supergroup' || chatType === 'group')) {
-        console.log(`✅ Bot added to group: ${chatId}`);
+    if not videos:
+        return False
+    
+    try:
+        for i, video in enumerate(videos):
+            caption = video['caption']
+            if len(videos) > 1:
+                caption += f"\n\n📹 Video {i+1}/{len(videos)}"
+            
+            await context.bot.send_video(
+                chat_id=user_id,
+                video=video['file_id'],
+                caption=caption,
+                parse_mode='Markdown'
+            )
+            
+            if i < len(videos) - 1:
+                await asyncio.sleep(0.5)
+        return True
+    except Exception as e:
+        print(f"Error sending videos: {e}")
+        return False
+
+# ============================================
+# COMMAND HANDLERS
+# ============================================
+
+# /start command
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("👩 Set Welcome for GIRLS", callback_data='admin_set_girls')],
+        [InlineKeyboardButton("👨 Set Welcome for BOYS", callback_data='admin_set_boys')],
+        [InlineKeyboardButton("📹 View Settings", callback_data='admin_view_settings')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🎉 *Welcome Bot Activated!* 🎉\n\n"
+        "I will welcome new members with video + message.\n\n"
+        "*Setup Instructions:*\n"
+        "1️⃣ Click a button below to set welcome for GIRLS\n"
+        "2️⃣ Send a video (optional) + welcome message\n"
+        "3️⃣ Repeat for BOYS\n\n"
+        "*Note:* Only group admins can change settings.",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+# /setup command (group only)
+async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    
+    if chat_type in ['private']:
+        await update.message.reply_text("❌ Use this command in the GROUP where I am added!")
+        return
+    
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ *Access Denied!*\nOnly group admins can use this command.", parse_mode='Markdown')
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("👩 Set Welcome for GIRLS", callback_data='admin_set_girls')],
+        [InlineKeyboardButton("👨 Set Welcome for BOYS", callback_data='admin_set_boys')],
+        [InlineKeyboardButton("📹 View Current Settings", callback_data='admin_view_settings')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "⚙️ *Welcome Bot Setup*\n\n"
+        "Click a button below to configure welcome messages and videos for new members.\n\n"
+        "Welcome will be sent directly in this GROUP!",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+# /settings command
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type in ['private']:
+        await update.message.reply_text("❌ Use this command in the GROUP!")
+        return
+    
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Only group admins can view settings!", parse_mode='Markdown')
+        return
+    
+    msg = "📹 *CURRENT WELCOME SETTINGS*\n\n"
+    msg += f"👩 *GIRLS:*\n"
+    msg += f"📝 Message: {welcome_settings['girls']['message'][:80]}...\n"
+    msg += f"🎬 Video: {'✅ SET' if welcome_settings['girls']['video_file_id'] else '❌ NOT SET'}\n\n"
+    msg += f"👨 *BOYS:*\n"
+    msg += f"📝 Message: {welcome_settings['boys']['message'][:80]}...\n"
+    msg += f"🎬 Video: {'✅ SET' if welcome_settings['boys']['video_file_id'] else '❌ NOT SET'}\n\n"
+    msg += f"Use /setup to change settings."
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+# /help command
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    is_admin = False
+    if update.effective_chat.type not in ['private']:
+        is_admin = await is_group_admin(update, update.effective_user.id)
+    
+    help_msg = "🤖 *WELCOME BOT HELP*\n\n"
+    help_msg += "*How it works:*\n"
+    help_msg += "1️⃣ When someone joins the group\n"
+    help_msg += "2️⃣ Bot asks for gender\n"
+    help_msg += "3️⃣ User selects GIRL or BOY\n"
+    help_msg += "4️⃣ Bot sends welcome video + message in GROUP\n\n"
+    
+    help_msg += "*Admin Commands (Group only):*\n"
+    help_msg += "/setup - Configure welcome settings\n"
+    help_msg += "/settings - View current settings\n"
+    help_msg += "/help - Show this message\n\n"
+    
+    help_msg += "*Setup Steps:*\n"
+    help_msg += "1️⃣ Type /setup in group\n"
+    help_msg += "2️⃣ Click 'Set Welcome for GIRLS'\n"
+    help_msg += "3️⃣ Send welcome message (use {name} for member name)\n"
+    help_msg += "4️⃣ Send a welcome video (optional) or type /skip\n"
+    help_msg += "5️⃣ Repeat for BOYS\n\n"
+    
+    help_msg += "⚠️ *Make me ADMIN in the group for best results!*"
+    
+    await update.message.reply_text(help_msg, parse_mode='Markdown')
+
+# /skip command
+async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in admin_session:
+        await update.message.reply_text("❌ You are not in setup mode! Use /setup first.")
+        return
+    
+    session = admin_session[user_id]
+    
+    if session['step'] == 'awaiting_video':
+        gender = session['gender']
+        welcome_settings[gender]['video_file_id'] = None
         
-        const keyboard = Markup.inlineKeyboard([
-            [Markup.button.callback('👩 Set Welcome for GIRLS', 'admin_set_girls')],
-            [Markup.button.callback('👨 Set Welcome for BOYS', 'admin_set_boys')],
-            [Markup.button.callback('📹 View Current Settings', 'admin_view_settings')]
-        ]);
+        del admin_session[user_id]
         
-        await ctx.reply(
-            `🎉 *Welcome Bot Activated!* 🎉\n\n` +
-            `I will welcome new members in this group with video + message.\n\n` +
-            `*Setup Instructions:*\n` +
-            `1️⃣ Click a button below to set welcome for GIRLS\n` +
-            `2️⃣ Send a video (optional) + welcome message\n` +
-            `3️⃣ Repeat for BOYS\n\n` +
-            `*Note:* Only group admins can change these settings.`,
-            { parse_mode: 'Markdown', ...keyboard }
-        );
-    }
-});
+        await update.message.reply_text(
+            f"✅ *Welcome setup COMPLETE for {gender.upper()}!*\n\n"
+            f"📝 Message: {welcome_settings[gender]['message']}\n"
+            f"🎬 Video: NOT SET (skipped)\n\n"
+            f"Now when a {gender} joins the group, they will see the welcome message.",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("❌ Use /skip after setting the message!")
 
-// ============================================
-// ADMIN SETUP BUTTONS
-// ============================================
-bot.action('admin_set_girls', async (ctx) => {
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.answerCbQuery('❌ Only group admins can change settings!', { show_alert: true });
-        return;
-    }
-    
-    adminSession.set(ctx.from.id, { gender: 'girls', step: 'awaiting_message' });
-    
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(
-        `👩 *Setting up WELCOME for GIRLS*\n\n` +
-        `Send me the welcome message you want to show when a girl joins.\n\n` +
-        `*Available placeholders:*\n` +
-        `{name} - Member's first name\n` +
-        `{username} - Member's username\n` +
-        `{mention} - Mention the member\n\n` +
-        `*Example:*\n` +
-        `"🌸 Welcome {name}! Happy to have you here!"\n\n` +
-        `Send your message now 👇`,
-        { parse_mode: 'Markdown' }
-    );
-});
+# ============================================
+# CALLBACK QUERY HANDLERS
+# ============================================
 
-bot.action('admin_set_boys', async (ctx) => {
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.answerCbQuery('❌ Only group admins can change settings!', { show_alert: true });
-        return;
-    }
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    adminSession.set(ctx.from.id, { gender: 'boys', step: 'awaiting_message' });
+    user_id = query.from_user.id
     
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(
-        `👨 *Setting up WELCOME for BOYS*\n\n` +
-        `Send me the welcome message you want to show when a boy joins.\n\n` +
-        `*Available placeholders:*\n` +
-        `{name} - Member's first name\n` +
-        `{username} - Member's username\n` +
-        `{mention} - Mention the member\n\n` +
-        `*Example:*\n` +
-        `"🔥 Welcome {name}! Glad to see you here!"\n\n` +
-        `Send your message now 👇`,
-        { parse_mode: 'Markdown' }
-    );
-});
-
-bot.action('admin_view_settings', async (ctx) => {
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.answerCbQuery('❌ Only group admins can view settings!', { show_alert: true });
-        return;
-    }
+    # Check if user is admin (for admin actions)
+    if query.data.startswith('admin_'):
+        # For group chats, verify admin status
+        if query.message.chat.type not in ['private']:
+            if not await is_group_admin(update, user_id):
+                await query.edit_message_text("❌ Only group admins can change settings!")
+                return
     
-    let msg = `📹 *CURRENT WELCOME SETTINGS*\n\n`;
-    msg += `👩 *GIRLS:*\n`;
-    msg += `📝 Message: ${welcomeSettings.girls.message.substring(0, 100)}...\n`;
-    msg += `🎬 Video: ${welcomeSettings.girls.videoFileId ? '✅ SET' : '❌ NOT SET'}\n\n`;
-    msg += `👨 *BOYS:*\n`;
-    msg += `📝 Message: ${welcomeSettings.boys.message.substring(0, 100)}...\n`;
-    msg += `🎬 Video: ${welcomeSettings.boys.videoFileId ? '✅ SET' : '❌ NOT SET'}\n\n`;
-    
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('✏️ Edit GIRLS Settings', 'admin_set_girls')],
-        [Markup.button.callback('✏️ Edit BOYS Settings', 'admin_set_boys')],
-        [Markup.button.callback('🗑️ Clear All Settings', 'admin_clear_all')],
-        [Markup.button.callback('❌ Close', 'admin_close')]
-    ]);
-    
-    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...keyboard });
-});
-
-bot.action('admin_clear_all', async (ctx) => {
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.answerCbQuery('❌ Only group admins can do this!', { show_alert: true });
-        return;
-    }
-    
-    welcomeSettings = {
-        girls: { message: "🌸 Welcome {name}!", videoFileId: null },
-        boys: { message: "🔥 Welcome {name}!", videoFileId: null }
-    };
-    
-    await ctx.answerCbQuery('✅ All settings cleared!');
-    await ctx.editMessageText(
-        `✅ *All welcome settings have been cleared!*\n\n` +
-        `Use the buttons below to set new welcome messages and videos.`,
-        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
-            [Markup.button.callback('👩 Set GIRLS Welcome', 'admin_set_girls')],
-            [Markup.button.callback('👨 Set BOYS Welcome', 'admin_set_boys')]
-        ]) }
-    );
-});
-
-bot.action('admin_close', async (ctx) => {
-    await ctx.deleteMessage();
-});
-
-// ============================================
-// HANDLE ADMIN MESSAGE INPUT
-// ============================================
-bot.on('text', async (ctx) => {
-    const session = adminSession.get(ctx.from.id);
-    if (!session) return;
-    
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        adminSession.delete(ctx.from.id);
-        return;
-    }
-    
-    if (session.step === 'awaiting_message') {
-        // Save the message
-        const gender = session.gender;
-        welcomeSettings[gender].message = ctx.message.text;
+    if query.data == 'admin_set_girls':
+        admin_session[user_id] = {'gender': 'girls', 'step': 'awaiting_message'}
         
-        adminSession.set(ctx.from.id, { gender: gender, step: 'awaiting_video' });
+        await query.edit_message_text(
+            "👩 *Setting up WELCOME for GIRLS*\n\n"
+            "Send me the welcome message you want to show when a girl joins.\n\n"
+            "*Available placeholders:*\n"
+            "{name} - Member's first name\n"
+            "{username} - Member's username\n"
+            "{mention} - Mention the member\n\n"
+            "*Example:*\n"
+            '🌸 "Welcome {name}! Happy to have you here!"\n\n'
+            "Send your message now 👇",
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == 'admin_set_boys':
+        admin_session[user_id] = {'gender': 'boys', 'step': 'awaiting_message'}
         
-        await ctx.reply(
-            `✅ *Message saved for ${gender === 'girls' ? 'GIRLS' : 'BOYS'}!*\n\n` +
-            `📝 Your message:\n"${ctx.message.text}"\n\n` +
-            `Now send me a WELCOME VIDEO (optional) for ${gender === 'girls' ? 'GIRLS' : 'BOYS'}.\n\n` +
-            `• Send a video to set it\n` +
-            `• Or type /skip to continue without video`,
-            { parse_mode: 'Markdown' }
-        );
-    }
-});
+        await query.edit_message_text(
+            "👨 *Setting up WELCOME for BOYS*\n\n"
+            "Send me the welcome message you want to show when a boy joins.\n\n"
+            "*Available placeholders:*\n"
+            "{name} - Member's first name\n"
+            "{username} - Member's username\n"
+            "{mention} - Mention the member\n\n"
+            "*Example:*\n"
+            '🔥 "Welcome {name}! Glad to see you here!"\n\n'
+            "Send your message now 👇",
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == 'admin_view_settings':
+        msg = "📹 *CURRENT WELCOME SETTINGS*\n\n"
+        msg += f"👩 *GIRLS:*\n"
+        msg += f"📝 Message: {welcome_settings['girls']['message'][:80]}...\n"
+        msg += f"🎬 Video: {'✅ SET' if welcome_settings['girls']['video_file_id'] else '❌ NOT SET'}\n\n"
+        msg += f"👨 *BOYS:*\n"
+        msg += f"📝 Message: {welcome_settings['boys']['message'][:80]}...\n"
+        msg += f"🎬 Video: {'✅ SET' if welcome_settings['boys']['video_file_id'] else '❌ NOT SET'}\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("✏️ Edit GIRLS", callback_data='admin_set_girls')],
+            [InlineKeyboardButton("✏️ Edit BOYS", callback_data='admin_set_boys')],
+            [InlineKeyboardButton("🗑️ Clear All", callback_data='admin_clear_all')],
+            [InlineKeyboardButton("❌ Close", callback_data='admin_close')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=reply_markup)
+    
+    elif query.data == 'admin_clear_all':
+        welcome_settings['girls']['message'] = "🌸 Welcome {name}!"
+        welcome_settings['girls']['video_file_id'] = None
+        welcome_settings['boys']['message'] = "🔥 Welcome {name}!"
+        welcome_settings['boys']['video_file_id'] = None
+        
+        await query.edit_message_text(
+            "✅ *All welcome settings have been cleared!*\n\n"
+            "Use the buttons below to set new welcome messages and videos.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👩 Set GIRLS Welcome", callback_data='admin_set_girls')],
+                [InlineKeyboardButton("👨 Set BOYS Welcome", callback_data='admin_set_boys')]
+            ])
+        )
+    
+    elif query.data == 'admin_close':
+        await query.delete_message()
+    
+    # Gender selection callback (when new member joins)
+    elif query.data.startswith('welcome_'):
+        parts = query.data.split('_')
+        gender = parts[1]
+        target_user_id = int(parts[2])
+        user_id = query.from_user.id
+        
+        if user_id != target_user_id:
+            await query.answer("❌ This welcome is not for you!", show_alert=True)
+            return
+        
+        await query.answer(f"✅ Welcome {'Girl' if gender == 'girls' else 'Boy'}!")
+        
+        # Prepare welcome message
+        name = query.from_user.first_name
+        username = query.from_user.username or ''
+        mention = f"@{username}" if username else name
+        
+        welcome_message = welcome_settings[gender]['message']
+        welcome_message = welcome_message.replace('{name}', name)
+        welcome_message = welcome_message.replace('{username}', username)
+        welcome_message = welcome_message.replace('{mention}', mention)
+        
+        video_file_id = welcome_settings[gender]['video_file_id']
+        
+        # Delete the selection message
+        try:
+            await query.delete_message()
+        except:
+            pass
+        
+        # Send welcome in the group
+        if video_file_id:
+            await query.message.reply_video(
+                video=video_file_id,
+                caption=welcome_message,
+                parse_mode='Markdown'
+            )
+        else:
+            await query.message.reply_text(welcome_message, parse_mode='Markdown')
+        
+        # Send confirmation
+        await query.message.reply_text(
+            f"✅ *{name}*, you have been welcomed as a {'🌸 Girl' if gender == 'girls' else '🔥 Boy'}!\n"
+            f"Enjoy your time in the group! 🎉",
+            parse_mode='Markdown'
+        )
 
-// Handle video upload from admin
-bot.on('video', async (ctx) => {
-    const session = adminSession.get(ctx.from.id);
-    if (!session) return;
-    
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        adminSession.delete(ctx.from.id);
-        return;
-    }
-    
-    if (session.step === 'awaiting_video') {
-        const gender = session.gender;
-        welcomeSettings[gender].videoFileId = ctx.message.video.file_id;
-        
-        adminSession.delete(ctx.from.id);
-        
-        await ctx.reply(
-            `✅ *Welcome setup COMPLETE for ${gender === 'girls' ? 'GIRLS' : 'BOYS'}!*\n\n` +
-            `📝 Message: ${welcomeSettings[gender].message}\n` +
-            `🎬 Video: ${welcomeSettings[gender].videoFileId ? '✅ SET' : '❌ NOT SET'}\n\n` +
-            `Now when a ${gender === 'girls' ? 'girl' : 'boy'} joins the group, they will see this welcome!`,
-            { parse_mode: 'Markdown' }
-        );
-    }
-});
+# ============================================
+# MESSAGE HANDLERS
+# ============================================
 
-// Handle /skip command
-bot.command('skip', async (ctx) => {
-    const session = adminSession.get(ctx.from.id);
-    if (!session) return;
+# Handle text messages (for admin setup)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        adminSession.delete(ctx.from.id);
-        return;
-    }
+    if user_id not in admin_session:
+        return
     
-    if (session.step === 'awaiting_video') {
-        const gender = session.gender;
-        welcomeSettings[gender].videoFileId = null;
+    session = admin_session[user_id]
+    
+    if session['step'] == 'awaiting_message':
+        gender = session['gender']
+        welcome_settings[gender]['message'] = update.message.text
         
-        adminSession.delete(ctx.from.id);
+        admin_session[user_id] = {'gender': gender, 'step': 'awaiting_video'}
         
-        await ctx.reply(
-            `✅ *Welcome setup COMPLETE for ${gender === 'girls' ? 'GIRLS' : 'BOYS'}!*\n\n` +
-            `📝 Message: ${welcomeSettings[gender].message}\n` +
-            `🎬 Video: NOT SET (skipped)\n\n` +
-            `Now when a ${gender === 'girls' ? 'girl' : 'boy'} joins the group, they will see the welcome message.`,
-            { parse_mode: 'Markdown' }
-        );
-    }
-});
+        await update.message.reply_text(
+            f"✅ *Message saved for {gender.upper()}!*\n\n"
+            f"📝 Your message:\n\"{update.message.text}\"\n\n"
+            f"Now send me a WELCOME VIDEO (optional) for {gender.upper()}.\n\n"
+            f"• Send a video to set it\n"
+            f"• Or type /skip to continue without video",
+            parse_mode='Markdown'
+        )
 
-// ============================================
-// NEW MEMBER JOIN HANDLER - WELCOME IN GROUP
-// ============================================
-bot.on('new_chat_members', async (ctx) => {
-    const newMembers = ctx.message.new_chat_members;
-    const chatId = ctx.chat.id;
+# Handle video messages (for admin setup)
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     
-    for (const member of newMembers) {
-        // Skip if bot itself joined
-        if (member.id === bot.botInfo.id) continue;
+    if user_id not in admin_session:
+        return
+    
+    session = admin_session[user_id]
+    
+    if session['step'] == 'awaiting_video':
+        gender = session['gender']
+        video_file_id = update.message.video.file_id
+        welcome_settings[gender]['video_file_id'] = video_file_id
         
-        const userId = member.id;
-        const name = member.first_name || 'User';
-        const username = member.username || '';
-        const mention = username ? `@${username}` : name;
+        # Also save to database for multiple videos support
+        video_database[gender].append({
+            'file_id': video_file_id,
+            'caption': welcome_settings[gender]['message'],
+            'added_by': update.effective_user.first_name,
+            'added_at': datetime.now().isoformat()
+        })
+        save_database()
         
-        // Show gender selection buttons in GROUP
-        const keyboard = Markup.inlineKeyboard([
+        del admin_session[user_id]
+        
+        await update.message.reply_text(
+            f"✅ *Welcome setup COMPLETE for {gender.upper()}!*\n\n"
+            f"📝 Message: {welcome_settings[gender]['message']}\n"
+            f"🎬 Video: ✅ SET\n\n"
+            f"Now when a {gender} joins the group, they will see this welcome!",
+            parse_mode='Markdown'
+        )
+
+# Handle new chat members
+async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for member in update.message.new_chat_members:
+        if member.id == context.bot.id:
+            continue
+        
+        user_id = member.id
+        name = member.first_name or 'User'
+        
+        keyboard = [
             [
-                Markup.button.callback('👩 I am a GIRL / Female', `welcome_girls_${userId}_${chatId}`),
-                Markup.button.callback('👨 I am a BOY / Male', `welcome_boys_${userId}_${chatId}`)
+                InlineKeyboardButton("👩 I am a GIRL / Female", callback_data=f'welcome_girls_{user_id}'),
+                InlineKeyboardButton("👨 I am a BOY / Male", callback_data=f'welcome_boys_{user_id}')
             ]
-        ]);
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await ctx.reply(
-            `🎉 *Welcome to the group, ${name}!* 🎉\n\n` +
-            `Please tell us your gender to get a special welcome message:`,
-            { parse_mode: 'Markdown', ...keyboard }
-        );
-        
-        // Store for cleanup after 2 minutes
-        setTimeout(async () => {
-            try {
-                await ctx.deleteMessage();
-            } catch (err) {}
-        }, 120000);
-    }
-});
+        await update.message.reply_text(
+            f"🎉 *Welcome to the group, {name}!* 🎉\n\n"
+            f"Please tell us your gender to get a special welcome message:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
-// ============================================
-// GENDER SELECTION CALLBACK - SEND WELCOME IN GROUP
-// ============================================
-bot.action(/welcome_(girls|boys)_(\d+)_(\d+)/, async (ctx) => {
-    const gender = ctx.match[1];
-    const targetUserId = parseInt(ctx.match[2]);
-    const groupChatId = parseInt(ctx.match[3]);
-    const userId = ctx.from.id;
-    
-    // Verify that the person clicking is the new member
-    if (userId !== targetUserId) {
-        await ctx.answerCbQuery('❌ This welcome is not for you!', { show_alert: true });
-        return;
-    }
-    
-    await ctx.answerCbQuery(`✅ Welcome ${gender === 'girls' ? 'Girl' : 'Boy'}!`);
-    
-    // Prepare welcome message with placeholders
-    const name = ctx.from.first_name || 'User';
-    const username = ctx.from.username || '';
-    const mention = username ? `@${username}` : name;
-    
-    let welcomeMessage = welcomeSettings[gender].message
-        .replace(/{name}/g, name)
-        .replace(/{username}/g, username)
-        .replace(/{mention}/g, mention);
-    
-    const videoFileId = welcomeSettings[gender].videoFileId;
-    
-    // Delete the selection message
-    try {
-        await ctx.deleteMessage();
-    } catch (err) {}
-    
-    // Send welcome in the GROUP
-    if (videoFileId) {
-        // Send video with caption in group
-        await ctx.replyWithVideo(videoFileId, {
-            caption: welcomeMessage,
-            parse_mode: 'Markdown'
-        });
-    } else {
-        // Send only message in group
-        await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
-    }
-    
-    // Also send a confirmation message
-    await ctx.reply(
-        `✅ *${name}*, you have been welcomed as a ${gender === 'girls' ? '🌸 Girl' : '🔥 Boy'}!\n` +
-        `Enjoy your time in the group! 🎉`,
-        { parse_mode: 'Markdown' }
-    );
-});
+# ============================================
+# MAIN FUNCTION
+# ============================================
 
-// ============================================
-// HELPER COMMANDS
-// ============================================
-bot.command('settings', async (ctx) => {
-    if (ctx.chat.type === 'private') {
-        await ctx.reply('❌ Use this command in the GROUP where bot is added!');
-        return;
-    }
+def main():
+    print("\n🤖 Telegram Welcome Bot Started!")
+    print("=====================================")
+    print(f"📹 Girls videos: {len(video_database.get('girls', []))}")
+    print(f"📹 Boys videos: {len(video_database.get('boys', []))}")
+    print("=====================================\n")
     
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.reply('❌ Only group admins can view settings!', { parse_mode: 'Markdown' });
-        return;
-    }
+    # Create application
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    let msg = `📹 *WELCOME SETTINGS*\n\n`;
-    msg += `👩 *GIRLS:*\n`;
-    msg += `📝 Message: ${welcomeSettings.girls.message.substring(0, 80)}...\n`;
-    msg += `🎬 Video: ${welcomeSettings.girls.videoFileId ? '✅ SET' : '❌ NOT SET'}\n\n`;
-    msg += `👨 *BOYS:*\n`;
-    msg += `📝 Message: ${welcomeSettings.boys.message.substring(0, 80)}...\n`;
-    msg += `🎬 Video: ${welcomeSettings.boys.videoFileId ? '✅ SET' : '❌ NOT SET'}\n\n`;
-    msg += `Use /setup to change settings.`;
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("setup", setup_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("skip", skip_command))
     
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('⚙️ Change Settings', 'admin_set_girls')]
-    ]);
+    # Add callback query handler
+    application.add_handler(CallbackQueryHandler(button_callback))
     
-    await ctx.reply(msg, { parse_mode: 'Markdown', ...keyboard });
-});
+    # Add message handlers
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members))
+    
+    # Start bot
+    print("✅ Bot is running... Press Ctrl+C to stop\n")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-bot.command('setup', async (ctx) => {
-    if (ctx.chat.type === 'private') {
-        await ctx.reply('❌ Use this command in the GROUP where bot is added!');
-        return;
-    }
-    
-    const isAdmin = await isGroupAdmin(ctx, ctx.from.id);
-    if (!isAdmin) {
-        await ctx.reply('❌ Only group admins can change settings!', { parse_mode: 'Markdown' });
-        return;
-    }
-    
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('👩 Set Welcome for GIRLS', 'admin_set_girls')],
-        [Markup.button.callback('👨 Set Welcome for BOYS', 'admin_set_boys')],
-        [Markup.button.callback('📹 View Current Settings', 'admin_view_settings')]
-    ]);
-    
-    await ctx.reply(
-        `⚙️ *Welcome Bot Setup*\n\n` +
-        `Click a button below to configure welcome messages and videos for new members.\n\n` +
-        `Welcome will be sent directly in this GROUP!`,
-        { parse_mode: 'Markdown', ...keyboard }
-    );
-});
-
-bot.command('help', async (ctx) => {
-    const isAdmin = ctx.chat.type !== 'private' ? await isGroupAdmin(ctx, ctx.from.id) : false;
-    
-    let helpMsg = `🤖 *WELCOME BOT HELP*\n\n`;
-    helpMsg += `*How it works:*\n`;
-    helpMsg += `1️⃣ When someone joins the group\n`;
-    helpMsg += `2️⃣ Bot asks for gender\n`;
-    helpMsg += `3️⃣ User selects GIRL or BOY\n`;
-    helpMsg += `4️⃣ Bot sends welcome video + message in GROUP\n\n`;
-    
-    helpMsg += `*Admin Commands (Group only):*\n`;
-    helpMsg += `/setup - Configure welcome settings\n`;
-    helpMsg += `/settings - View current settings\n`;
-    helpMsg += `/help - Show this message\n\n`;
-    
-    helpMsg += `*Setup Steps:*\n`;
-    helpMsg += `1️⃣ Type /setup in group\n`;
-    helpMsg += `2️⃣ Click "Set Welcome for GIRLS"\n`;
-    helpMsg += `3️⃣ Send welcome message (use {name} for member name)\n`;
-    helpMsg += `4️⃣ Send a welcome video (optional) or type /skip\n`;
-    helpMsg += `5️⃣ Repeat for BOYS\n\n`;
-    
-    helpMsg += `⚠️ *Make me ADMIN in the group for best results!*`;
-    
-    await ctx.reply(helpMsg, { parse_mode: 'Markdown' });
-});
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-bot.catch((err, ctx) => {
-    console.error('Bot error:', err);
-    ctx.reply('⚠️ An error occurred. Please try again.');
-});
-
-// Launch bot
-bot.launch()
-    .then(() => {
-        console.log('🤖 Welcome Bot is running!');
-        console.log('\n📋 Setup Instructions:');
-        console.log('1. Add bot to your group');
-        console.log('2. Make bot ADMIN in the group');
-        console.log('3. Type /setup in group');
-        console.log('4. Set welcome message + video for GIRLS');
-        console.log('5. Set welcome message + video for BOYS');
-        console.log('6. Bot will welcome new members in GROUP!\n');
-    });
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+if __name__ == '__main__':
+    main()
