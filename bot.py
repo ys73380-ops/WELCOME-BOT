@@ -1,9 +1,4 @@
-"""
-Telegram Welcome Bot
-Welcome message format: 2nd image style (Celestia - Safe Vibe Community)
-Requires: pip install python-telegram-bot groq
-"""
-
+import os
 import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -11,9 +6,7 @@ from ai_gender_detect import detect_gender_ai as detect_gender
 
 logging.basicConfig(level=logging.INFO)
 
-# ─── APNA BOT TOKEN YAHAN DAALO ───────────────────────────
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-# ──────────────────────────────────────────────────────────
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
 def build_welcome_message(member) -> str:
@@ -58,7 +51,6 @@ Welcome to the family, {pronoun}! 🎉
 👉 *Safe & active group chahiye?*
 🌸 *JOIN RIGHT NOW* 🌸
 
-🔗 https://t.me/+eIE2fyAuKE1mMGY8
 """
     # ══════════════════════════════════════════════════════
     return msg.strip()
