@@ -1,0 +1,28 @@
+// ============================================
+// videos.json - Database file structure
+// ============================================
+
+{
+  "girls": [
+    {
+      "file_id": "BAACAgQAAxkBAAPjZcrXxV4YmZgmvQABBEIQW4HPAAlVAAJtCQAC64Q4Uh6RgH6bO4ZcLzAE",
+      "caption": "🌸 Welcome beautiful! 🌸\n\nWe're so happy to have you in our family!\n\n✨ Special perks for girls:\n• Exclusive offers\n• Women's community\n• Special discounts\n\nEnjoy your stay! 💕",
+      "added_by": "Admin Name",
+      "added_at": "2024-01-15T10:30:00.000Z"
+    },
+    {
+      "file_id": "BAACAgQAAxkBAAPkZcrXyF4YmZgmvQABBEIQW4HPAAlWAAJtCQAC64Q4Uh6RgH6bO4ZcME",
+      "caption": "🎀 Hey Queen! 👑\n\nWelcome to our amazing group!\n\nCheck out our rules and enjoy the community!",
+      "added_by": "Admin Name",
+      "added_at": "2024-01-20T14:45:00.000Z"
+    }
+  ],
+  "boys": [
+    {
+      "file_id": "BAACAgQAAxkBAAPlZcrXyV4YmZgmvQABBEIQW4HPAAlXAAJtCQAC64Q4Uh6RgH6bO4ZcMF",
+      "caption": "🔥 Welcome sir! 🔥\n\nGlad to have you in our community!\n\n⚡ Exclusive for boys:\n• Premium content\n• Early access\n• Special events\n\nEnjoy your stay! 💪",
+      "added_by": "Admin Name",
+      "added_at": "2024-01-15T11:20:00.000Z"
+    }
+  ]
+}
