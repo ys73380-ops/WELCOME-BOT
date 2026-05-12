@@ -1,2 +1,2 @@
-pip install --upgrade python-telegram-bot
+python-telegram-bot>=20.8
 python-dotenv==1.0.0
