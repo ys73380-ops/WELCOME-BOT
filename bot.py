@@ -2,25 +2,24 @@ import os
 import json
 import asyncio
 from datetime import datetime
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Load environment variables
-load_dotenv()
+# ============================================
+# CONFIGURATION
+# ============================================
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 
-# Configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    print("❌ BOT_TOKEN not found in .env file!")
+if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
+    print("❌ Please set BOT_TOKEN in environment variables!")
     exit(1)
 
 # Database file
 DATABASE_FILE = 'videos.json'
 
-# Video database structure
+# Video database
 video_database = {
-    'girls': [],  # List of {file_id, caption, added_by, added_at}
+    'girls': [],
     'boys': []
 }
 
@@ -44,7 +43,7 @@ def load_database():
     global video_database
     if os.path.exists(DATABASE_FILE):
         try:
-            with open(DATABASE_FILE, 'r') as f:
+            with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
                 video_database = json.load(f)
             print("✅ Database loaded")
             print(f"📹 Girls videos: {len(video_database.get('girls', []))}")
@@ -56,50 +55,19 @@ def load_database():
 
 def save_database():
     try:
-        with open(DATABASE_FILE, 'w') as f:
-            json.dump(video_database, f, indent=2)
+        with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(video_database, f, indent=2, ensure_ascii=False)
         print("💾 Database saved")
     except Exception as e:
         print(f"Error saving database: {e}")
 
 # Check if user is group admin
-async def is_group_admin(update: Update, user_id: int) -> bool:
+async def is_group_admin(application, chat_id, user_id):
     try:
-        chat_member = await update.effective_chat.get_member(user_id)
+        chat_member = await application.bot.get_chat_member(chat_id, user_id)
         return chat_member.status in ['administrator', 'creator']
     except:
         return False
-
-# Send welcome videos
-async def send_welcome_videos(context: ContextTypes.DEFAULT_TYPE, user_id: int, gender: str):
-    videos = video_database.get(gender, [])
-    
-    if not videos:
-        return False
-    
-    try:
-        for i, video in enumerate(videos):
-            caption = video['caption']
-            if len(videos) > 1:
-                caption += f"\n\n📹 Video {i+1}/{len(videos)}"
-            
-            await context.bot.send_video(
-                chat_id=user_id,
-                video=video['file_id'],
-                caption=caption,
-                parse_mode='Markdown'
-            )
-            
-            if i < len(videos) - 1:
-                await asyncio.sleep(0.5)
-        return True
-    except Exception as e:
-        print(f"Error sending videos: {e}")
-        return False
-
-# ============================================
-# COMMAND HANDLERS
-# ============================================
 
 # /start command
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,15 +90,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# /setup command (group only)
+# /setup command
 async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.effective_chat.type
     
-    if chat_type in ['private']:
+    if chat_type == 'private':
         await update.message.reply_text("❌ Use this command in the GROUP where I am added!")
         return
     
-    if not await is_group_admin(update, update.effective_user.id):
+    is_admin = await is_group_admin(context.application, update.effective_chat.id, update.effective_user.id)
+    if not is_admin:
         await update.message.reply_text("❌ *Access Denied!*\nOnly group admins can use this command.", parse_mode='Markdown')
         return
     
@@ -143,7 +112,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "⚙️ *Welcome Bot Setup*\n\n"
-        "Click a button below to configure welcome messages and videos for new members.\n\n"
+        "Click a button below to configure welcome messages and videos.\n\n"
         "Welcome will be sent directly in this GROUP!",
         parse_mode='Markdown',
         reply_markup=reply_markup
@@ -151,11 +120,12 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /settings command
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type in ['private']:
+    if update.effective_chat.type == 'private':
         await update.message.reply_text("❌ Use this command in the GROUP!")
         return
     
-    if not await is_group_admin(update, update.effective_user.id):
+    is_admin = await is_group_admin(context.application, update.effective_chat.id, update.effective_user.id)
+    if not is_admin:
         await update.message.reply_text("❌ Only group admins can view settings!", parse_mode='Markdown')
         return
     
@@ -172,10 +142,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # /help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_admin = False
-    if update.effective_chat.type not in ['private']:
-        is_admin = await is_group_admin(update, update.effective_user.id)
-    
     help_msg = "🤖 *WELCOME BOT HELP*\n\n"
     help_msg += "*How it works:*\n"
     help_msg += "1️⃣ When someone joins the group\n"
@@ -225,23 +191,19 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Use /skip after setting the message!")
 
-# ============================================
-# CALLBACK QUERY HANDLERS
-# ============================================
-
+# Callback handler
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     user_id = query.from_user.id
     
-    # Check if user is admin (for admin actions)
+    # Check admin status for admin actions
     if query.data.startswith('admin_'):
-        # For group chats, verify admin status
-        if query.message.chat.type not in ['private']:
-            if not await is_group_admin(update, user_id):
-                await query.edit_message_text("❌ Only group admins can change settings!")
-                return
+        is_admin = await is_group_admin(context.application, query.message.chat.id, user_id)
+        if not is_admin and query.message.chat.type != 'private':
+            await query.edit_message_text("❌ Only group admins can change settings!")
+            return
     
     if query.data == 'admin_set_girls':
         admin_session[user_id] = {'gender': 'girls', 'step': 'awaiting_message'}
@@ -313,20 +275,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'admin_close':
         await query.delete_message()
     
-    # Gender selection callback (when new member joins)
+    # Gender selection callback
     elif query.data.startswith('welcome_'):
         parts = query.data.split('_')
         gender = parts[1]
         target_user_id = int(parts[2])
-        user_id = query.from_user.id
         
-        if user_id != target_user_id:
+        if query.from_user.id != target_user_id:
             await query.answer("❌ This welcome is not for you!", show_alert=True)
             return
         
         await query.answer(f"✅ Welcome {'Girl' if gender == 'girls' else 'Boy'}!")
         
-        # Prepare welcome message
         name = query.from_user.first_name
         username = query.from_user.username or ''
         mention = f"@{username}" if username else name
@@ -338,13 +298,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         video_file_id = welcome_settings[gender]['video_file_id']
         
-        # Delete the selection message
         try:
             await query.delete_message()
         except:
             pass
         
-        # Send welcome in the group
         if video_file_id:
             await query.message.reply_video(
                 video=video_file_id,
@@ -354,18 +312,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text(welcome_message, parse_mode='Markdown')
         
-        # Send confirmation
         await query.message.reply_text(
             f"✅ *{name}*, you have been welcomed as a {'🌸 Girl' if gender == 'girls' else '🔥 Boy'}!\n"
             f"Enjoy your time in the group! 🎉",
             parse_mode='Markdown'
         )
 
-# ============================================
-# MESSAGE HANDLERS
-# ============================================
-
-# Handle text messages (for admin setup)
+# Message handlers
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -389,7 +342,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-# Handle video messages (for admin setup)
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -403,7 +355,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_file_id = update.message.video.file_id
         welcome_settings[gender]['video_file_id'] = video_file_id
         
-        # Also save to database for multiple videos support
+        # Save to database
         video_database[gender].append({
             'file_id': video_file_id,
             'caption': welcome_settings[gender]['message'],
@@ -422,7 +374,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-# Handle new chat members
 async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
@@ -446,11 +397,10 @@ async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=reply_markup
         )
 
-# ============================================
-# MAIN FUNCTION
-# ============================================
-
-def main():
+# Main function
+async def main():
+    load_database()
+    
     print("\n🤖 Telegram Welcome Bot Started!")
     print("=====================================")
     print(f"📹 Girls videos: {len(video_database.get('girls', []))}")
@@ -477,7 +427,7 @@ def main():
     
     # Start bot
     print("✅ Bot is running... Press Ctrl+C to stop\n")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
