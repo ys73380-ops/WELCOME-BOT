@@ -31,3 +31,5 @@ python-telegram-bot>=21.0,<22.0
 #   pip install python-dotenv
 #   .env file mein likho: BOT_TOKEN=your_token
 # ============================================
+python-telegram-bot
+groq
