@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         ADVANCED TELEGRAM WELCOME BOT v2.1                  ║
-║   Gender-based Welcome · Genderize.io · Redis + JSON       ║
+║ ADVANCED TELEGRAM WELCOME BOT v2.1                         ║
+║ Gender-based Welcome · Genderize.io · Redis + JSON         ║
 ╚══════════════════════════════════════════════════════════════╝
 
 STORAGE: Redis (primary) + JSON (fallback)
@@ -31,6 +31,33 @@ logging.basicConfig(
     level=logging.INFO, datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════════════
+# MARKDOWN ESCAPER — Unicode names/groups ke liye
+# ══════════════════════════════════════════════════════════
+def esc(text: str) -> str:
+    """Escape special chars for Telegram Markdown so Unicode names don't crash."""
+    if not text:
+        return text
+    return (text
+        .replace("\\", "\\\\")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("~", "\\~")
+        .replace("|", "\\|")
+        .replace(">", "\\>")
+        .replace("#", "\\#")
+        .replace("-", "\\-")
+        .replace("+", "\\+")
+        .replace("=", "\\=")
+        .replace("{", "\\{")
+        .replace("}", "\\}")
+        .replace(".", "\\.")
+        .replace("!", "\\!"))
 
 
 # ══════════════════════════════════════════════════════════
@@ -92,7 +119,6 @@ async def get_group_settings(group_id: int) -> dict:
 
 async def set_group_key(group_id: int, key: str, value):
     gid = str(group_id)
-    # Load existing
     r = await _get_redis()
     settings = {}
     if r:
@@ -108,7 +134,6 @@ async def set_group_key(group_id: int, key: str, value):
     settings[key] = value
     js = json.dumps(settings, ensure_ascii=False)
 
-    # Save to both
     if r:
         try:
             await r.set(f"wb:{gid}", js)
@@ -117,8 +142,7 @@ async def set_group_key(group_id: int, key: str, value):
     all_s = _load_json()
     all_s[gid] = settings
     await _save_json(all_s)
-
-    logger.info(f"[{gid}] Saved {key} successfully")
+    logger.info(f"[{gid}] Saved {key}")
 
 
 async def delete_group_key(group_id: int, key: str = None):
@@ -245,10 +269,13 @@ async def detect_gender(first: str, last: str = "") -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════
-# MESSAGE FORMATTER
+# MESSAGE FORMATTER — escapes dynamic content
 # ══════════════════════════════════════════════════════════
 def fmt(template: str, name: str, username: str, group: str) -> str:
-    return template.replace("{name}", name).replace("{username}", username).replace("{group}", group)
+    return (template
+        .replace("{name}", esc(name))
+        .replace("{username}", esc(username))
+        .replace("{group}", esc(group)))
 
 DEFAULT_MALE = (
     "💙 *Swagat hai, {name}!*\n\n"
@@ -267,29 +294,47 @@ DEFAULT_FEMALE = (
 
 
 # ══════════════════════════════════════════════════════════
+# SAFE SEND HELPER — auto fallback if Markdown fails
+# ══════════════════════════════════════════════════════════
+async def safe_send(context, chat_id, text, reply_markup=None, **kwargs):
+    """Try Markdown, fallback to plain text on parse error."""
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id, text=text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
+    except TelegramError:
+        # Strip all Markdown and send plain
+        clean = text.replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
+        await context.bot.send_message(
+            chat_id=chat_id, text=clean,
+            reply_markup=reply_markup
+        )
+
+
+# ══════════════════════════════════════════════════════════
 # /start
 # ══════════════════════════════════════════════════════════
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    n = u.first_name or "Dost"
-    st = "Redis + JSON" if REDIS_URL else "JSON"
-    await update.message.reply_text(
+    n = esc(u.first_name or "Dost")
+    await safe_send(context, update.effective_chat.id,
         f"👋 *Namaste, {n}!*\n\n"
-        "Main *Welcome Bot  hoon 🤖\n\n"
+        "Main *Welcome Bot* hoon 🤖\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📋 *Commands:*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🔗 `/connect` — Group → DM\n"
         "🎬 `/setvideo_male` — Boy video+msg\n"
         "🎀 `/setvideo_female` — Girl video+msg\n"
-        "👁 `/showset` — Set video and msg dekho\n"
+        "👁 `/showset` — Settings dekho\n"
         "🗑 `/delete` — Delete\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "💡 Placeholders:\n"
         "• name → Member ka naam\n"
         "• group → Group naam\n\n"
-        "⚠️ _Admin/owner only_",
-        parse_mode=ParseMode.MARKDOWN
+        "⚠️ _Admin/owner only_"
     )
 
 
@@ -301,12 +346,12 @@ async def connect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type == "private":
         gid = context.user_data.get("active_group_id")
-        gn = context.user_data.get("active_group_name", "—")
+        gn = esc(context.user_data.get("active_group_name", "—"))
         if gid:
             txt = f"✅ *Connected:* {gn}\n📁 ID: `{gid}`"
         else:
             txt = "⚠️ Koi group connected nahi.\n_Pehle group mein `/connect` chalao._"
-        await update.message.reply_text(f"🔗 *Status*\n\n{txt}", parse_mode=ParseMode.MARKDOWN)
+        await safe_send(context, chat.id, f"🔗 *Status*\n\n{txt}")
         return
 
     if not await is_admin(update, context):
@@ -315,9 +360,9 @@ async def connect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["active_group_name"] = chat.title
     me = await context.bot.get_me()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 DM Kholo", url=f"https://t.me/{me.username}?start=setup")]])
-    await update.message.reply_text(
-        f"🔗 *{chat.title}* connected!\n📁 ID: `{chat.id}`\n\nDM mein jaake settings karo 👇",
-        reply_markup=kb, parse_mode=ParseMode.MARKDOWN
+    await safe_send(context, chat.id,
+        f"🔗 *{esc(chat.title)}* connected!\n📁 ID: `{chat.id}`\n\nDM mein jaake settings karo 👇",
+        reply_markup=kb
     )
     logger.info(f"Connected: {chat.title} ({chat.id})")
 
@@ -329,18 +374,16 @@ async def _setvideo(update: Update, context: ContextTypes.DEFAULT_TYPE, gender: 
     chat = update.effective_chat
     msg = update.message
 
-    # Get group
     if chat.type == "private":
         gid = context.user_data.get("active_group_id")
         gn = context.user_data.get("active_group_name", "Group")
         if not gid:
-            return await msg.reply_text("⚠️ Pehle group mein `/connect` chalao.", parse_mode=ParseMode.MARKDOWN)
+            return await safe_send(context, chat.id, "⚠️ Pehle group mein `/connect` chalao.")
     else:
         if not await is_admin(update, context):
             return await msg.reply_text("❌ Sirf admin/owner.")
         gid, gn = chat.id, chat.title
 
-    # Video from reply
     reply = msg.reply_to_message
     vid = None
     if reply:
@@ -349,28 +392,26 @@ async def _setvideo(update: Update, context: ContextTypes.DEFAULT_TYPE, gender: 
         elif reply.document and reply.document.mime_type and "video" in reply.document.mime_type:
             vid = reply.document.file_id
 
-    # Message from args
     wmsg = " ".join(context.args).strip() if context.args else ""
 
     emoji = "🎬" if gender == "male" else "🎀"
     label = "Male (Boy)" if gender == "male" else "Female (Girl)"
 
-    # Save
     if vid:
         await set_group_key(gid, f"{gender}_video_id", vid)
     if wmsg:
         await set_group_key(gid, f"{gender}_welcome_msg", wmsg)
 
-    # VERIFY — read back to confirm
+    # Verify
     check = await get_group_settings(gid)
     got_vid = check.get(f"{gender}_video_id")
     got_msg = check.get(f"{gender}_welcome_msg", "")
 
-    logger.info(f"[{gn}] SET {label}: video={'YES' if got_vid else 'NO'}, msg={'YES' if got_msg else 'NO'} (group={gid})")
+    logger.info(f"[{gn}] SET {label}: video={'YES' if got_vid else 'NO'}, msg={'YES' if got_msg else 'NO'} (gid={gid})")
 
     lines = [
-        f"{emoji} *{label} Settings Updated!*\n",
-        f"🏠 Group: *{gn}* (`{gid}`)\n",
+        f"{emoji} *{label} Updated!*\n",
+        f"🏠 Group: *{esc(gn)}* `{gid}`\n",
         f"📹 Video: {'✅ Saved' if got_vid else '❌ Not saved'}",
         f"💬 Message: {'✅ Saved' if got_msg else '❌ Not saved'}",
     ]
@@ -380,7 +421,7 @@ async def _setvideo(update: Update, context: ContextTypes.DEFAULT_TYPE, gender: 
     if not vid and not wmsg:
         lines.append("\n⚠️ Kuch save nahi hua! Video reply ya message likho.")
 
-    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await safe_send(context, chat.id, "\n".join(lines))
 
 
 async def setvideo_male(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -399,7 +440,7 @@ async def showset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gid = context.user_data.get("active_group_id")
         gn = context.user_data.get("active_group_name", "Group")
         if not gid:
-            return await update.message.reply_text("⚠️ `/connect` pehle.", parse_mode=ParseMode.MARKDOWN)
+            return await safe_send(context, chat.id, "⚠️ `/connect` pehle.")
     else:
         if not await is_admin(update, context):
             return await update.message.reply_text("❌ Sirf admin/owner.")
@@ -407,18 +448,20 @@ async def showset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     s = await get_group_settings(gid)
     ok = lambda v: "✅" if v else "❌"
-    await update.message.reply_text(
-        f"📋 *Settings — {gn}*\n"
+
+    await safe_send(context, chat.id,
+        f"📋 *Settings — {esc(gn)}*\n"
         f"📁 ID: `{gid}`\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎬 *Male:*\n   📹 {ok(s.get('male_video_id'))}\n"
+        f"🎬 *Male:*\n"
+        f"   📹 {ok(s.get('male_video_id'))}\n"
         f"   💬 {ok(s.get('male_welcome_msg'))}\n"
-        f"   └─ `{s.get('male_welcome_msg', '(default)')}`\n\n"
-        f"🎀 *Female:*\n   📹 {ok(s.get('female_video_id'))}\n"
+        f"   └─ `{esc(s.get('male_welcome_msg', '(default)'))}`\n\n"
+        f"🎀 *Female:*\n"
+        f"   📹 {ok(s.get('female_video_id'))}\n"
         f"   💬 {ok(s.get('female_welcome_msg'))}\n"
-        f"   └─ `{s.get('female_welcome_msg', '(default)')}`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━",
-        parse_mode=ParseMode.MARKDOWN
+        f"   └─ `{esc(s.get('female_welcome_msg', '(default)'))}`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -431,7 +474,7 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gid = context.user_data.get("active_group_id")
         gn = context.user_data.get("active_group_name", "Group")
         if not gid:
-            return await update.message.reply_text("⚠️ `/connect` pehle.", parse_mode=ParseMode.MARKDOWN)
+            return await safe_send(context, chat.id, "⚠️ `/connect` pehle.")
     else:
         if not await is_admin(update, context):
             return await update.message.reply_text("❌ Sirf admin/owner.")
@@ -443,7 +486,7 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🗑 Sab", callback_data=f"del_all_{gid}")],
         [InlineKeyboardButton("❌ Cancel", callback_data="del_cancel")],
     ])
-    await update.message.reply_text(f"🗑 *{gn}* — Kya delete?", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await safe_send(context, chat.id, f"🗑 *{esc(gn)}* — Kya delete?", reply_markup=kb)
 
 
 async def delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -478,7 +521,7 @@ async def send_welcome(context, chat_id, user, gender, group_name):
     name = user.full_name or user.first_name or "Dost"
     uname = f"@{user.username}" if user.username else name
 
-    logger.info(f"[WELCOME] group={chat_id} gender={gender} has_video={bool(vid)} has_msg={bool(msg)}")
+    logger.info(f"[WELCOME] group={chat_id} gender={gender} video={'YES' if vid else 'NO'} msg={'YES' if msg else 'NO'}")
 
     if msg:
         final = fmt(msg, name, uname, group_name)
@@ -488,15 +531,31 @@ async def send_welcome(context, chat_id, user, gender, group_name):
 
     if vid:
         try:
-            await context.bot.send_video(chat_id=chat_id, video=vid, caption=final, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_video(
+                chat_id=chat_id, video=vid,
+                caption=final, parse_mode=ParseMode.MARKDOWN
+            )
             return
-        except TelegramError as e:
-            logger.warning(f"Video fail: {e}")
+        except TelegramError:
+            logger.warning("Video Markdown fail → plain text")
+            try:
+                clean = final.replace("*", "").replace("_", "").replace("\\", "")
+                await context.bot.send_video(
+                    chat_id=chat_id, video=vid, caption=clean
+                )
+                return
+            except TelegramError as e:
+                logger.warning(f"Video send fail: {e}")
 
+    # Text fallback
     try:
-        await context.bot.send_message(chat_id=chat_id, text=final, parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_message(
+            chat_id=chat_id, text=final,
+            parse_mode=ParseMode.MARKDOWN
+        )
     except TelegramError:
-        await context.bot.send_message(chat_id=chat_id, text=final.replace("*", "").replace("_", ""))
+        clean = final.replace("*", "").replace("_", "").replace("\\", "")
+        await context.bot.send_message(chat_id=chat_id, text=clean)
 
 
 # ══════════════════════════════════════════════════════════
@@ -552,7 +611,7 @@ async def greet_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = user.full_name or user.first_name or "Dost"
     uname = f"@{user.username}" if user.username else name
 
-    logger.info(f"New member: {name} ({uname}) in {gn} [chat_id={chat.id}]")
+    logger.info(f"New: {name} ({uname}) in {gn} [cid={chat.id}]")
 
     gender = await detect_gender(user.first_name or "", user.last_name or "")
 
@@ -563,16 +622,12 @@ async def greet_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👦 Boy hoon", callback_data=f"gender_male_{user.id}_{chat.id}"),
             InlineKeyboardButton("👧 Girl hoon", callback_data=f"gender_female_{user.id}_{chat.id}"),
         ]])
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=(
-                f"👋 *{name}* ka swagat!\n"
-                f"👤 {uname}\n\n"
-                f"Batao tum kaun ho? 😊\n"
-                f"_Sirf tum hi click kar sakte ho_ 👇"
-            ),
-            reply_markup=kb,
-            parse_mode=ParseMode.MARKDOWN
+        await safe_send(context, chat.id,
+            f"👋 *{esc(name)}* ka swagat!\n"
+            f"👤 {esc(uname)}\n\n"
+            f"Batao tum kaun ho? 😊\n"
+            f"_Sirf tum hi click kar sakte ho_ 👇",
+            reply_markup=kb
         )
 
 
@@ -582,7 +637,7 @@ async def greet_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         print("\n" + "=" * 50)
-        print("  BOT_TOKEN environment variable set nahi hai!")
+        print("  BOT_TOKEN set nahi hai!")
         print("=" * 50 + "\n")
         return
 
