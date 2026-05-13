@@ -276,7 +276,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 *Namaste, {n}!*\n\n"
         "Main *Welcome Bot v2.1* hoon 🤖\n\n"
-        f"💾 Storage: {st}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📋 *Commands:*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -288,7 +287,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "💡 Placeholders:\n"
         "• name → Member ka naam\n"
-        "• username → @handle\n"
         "• group → Group naam\n\n"
         "⚠️ _Admin/owner only_",
         parse_mode=ParseMode.MARKDOWN
