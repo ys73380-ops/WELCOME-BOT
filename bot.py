@@ -335,8 +335,9 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
     user = update.effective_user
+    name = user.first_name or "Dost"
     await update.message.reply_text(
-        "👋 *Namaste, {name}!*\n\n"
+        f"👋 *Namaste, {name}!*\n\n"
         "Main *Advanced Welcome Bot v2.0* hoon 🤖\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📋 *Available Commands:*\n"
@@ -355,13 +356,11 @@ async def start_command(
         "   └─ Settings delete karo\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "💡 *Tips:*\n"
-        "• `{name}` → Member ka naam\n"
-        "• `{username}` → @username\n"
-        "• `{group}` → Group ka naam\n"
+        "• name → Member ka naam\n"
+        "• username → @username\n"
+        "• group → Group ka naam\n"
         "• Multiline msg bhi set kar sakte ho!\n\n"
-        "⚠️ _Sirf admin/owner commands use kar sakte hain_".format(
-            name=user.first_name or "Dost"
-        ),
+        "⚠️ _Sirf admin/owner commands use kar sakte hain_",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -894,6 +893,12 @@ def main():
     app.add_handler(
         ChatMemberHandler(greet_new_member, ChatMemberHandler.CHAT_MEMBER)
     )
+
+    # ── Global Error Handler ──
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+        logger.error(f"Exception: {context.error}", exc_info=context.error)
+
+    app.add_error_handler(error_handler)
 
     logger.info("🤖 Advanced Welcome Bot v2.0 — Running!")
     logger.info("   Press Ctrl+C to stop.")
