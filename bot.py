@@ -5,6 +5,7 @@
 ╚══════════════════════════════════════════════════════════╝
 """
 
+import aiohttp
 import logging
 import json
 import os
