@@ -331,9 +331,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👁 `/showset` — Settings dekho\n"
         "🗑 `/delete` — Delete\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 Placeholders:\n"
-        "• name → Member ka naam\n"
-        "• group → Group naam\n\n"
         "⚠️ _Admin/owner only_"
     )
 
