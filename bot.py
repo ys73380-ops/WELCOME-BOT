@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Welcome Bot Gender Detection + Full Feature Set
-Commands: /set_male, /set_female, /add_more, /setbuttons, /preview, /reset etc.
+Fixed: Better gender detection + Video save confirmation
 """
 
 import os
@@ -69,19 +69,27 @@ def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if user_id in s.get("admins", [])]
 
-# ---------- GROQ Gender Detection (NEW WORKING MODEL) ----------
+# ---------- GROQ Gender Detection (IMPROVED for names like Pinky) ----------
 async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
     """Use GROQ LLM to detect gender. Returns 'male', 'female', or 'unknown'."""
     try:
         full_name = f"{first_name} {last_name}".strip()
+        
+        # Special case for common female names that AI might get wrong
+        common_female_names = ['pinky', 'sweety', 'baby', 'gudiya', 'soni', 'pappi', 'rinky', 'tinku', 'bittu', 'chintu', 'pintu']
+        if full_name.lower() in common_female_names or full_name.lower().split()[0] in common_female_names:
+            logger.info(f"Special case: {full_name} forced to female")
+            return "female"
+        
         prompt = (
             f"Based on the name '{full_name}' (username: @{username}), determine the gender.\n"
             "Reply with ONLY one word: 'male', 'female', or 'unknown'.\n"
             "Consider Indian, Arabic, English, and international names.\n"
+            "IMPORTANT: Names like Pinky, Sweety, Baby, Gudiya are FEMALE names in Indian context.\n"
             "If unsure, reply 'unknown'."
         )
         response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",  # ✅ Working model (not decommissioned)
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10,
             temperature=0.1,
@@ -206,7 +214,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ DM mein use karo.")
         return
     text = (
-        "🌹 *Welcome Bot* \\- detect gender\n\n"
+        "🌹 *Welcome Bot* \\- Gender Detection\n\n"
         "▪ /set\\_male — male message \\+ video\n"
         "▪ /set\\_female — female message \\+ video\n"
         "▪ /set\\_unknown — unknown gender message \\+ video\n"
@@ -249,7 +257,10 @@ async def recv_gender_msg(update, context):
     context.user_data["msg"] = update.message.text
     gender = context.user_data["gender"]
     await update.message.reply_text(
-        f"✅ Message saved\\! Ab {gender} ke liye *video bhejo* \\(ya /skip\\)\\.",
+        f"✅ *Message saved successfully!* 🎉\n\n"
+        f"📝 *Your {gender} welcome message:*\n`{context.user_data['msg'][:100]}...`\n\n"
+        f"🎬 Ab {gender} ke liye *video bhejo* (ya /skip kar sakte ho)\n"
+        f"Video bhejte hi *message + video dono save ho jayenge*!",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     state_map = {"male": WAITING_MALE_VIDEO, "female": WAITING_FEMALE_VIDEO, "unknown": WAITING_UNKNOWN_VIDEO}
@@ -259,10 +270,14 @@ async def recv_gender_video(update, context):
     gender = context.user_data["gender"]
     msg = context.user_data.get("msg", "")
     video_id = None
+    
     if update.message.video:
         video_id = update.message.video.file_id
+        logger.info(f"Video received: {video_id}")
     elif update.message.document and update.message.document.mime_type.startswith("video"):
         video_id = update.message.document.file_id
+        logger.info(f"Document video received: {video_id}")
+    
     for chat_id in context.user_data.get("linked", []):
         settings = get_settings(chat_id)
         gdata = settings.setdefault(gender, {"messages": [], "videos": []})
@@ -271,9 +286,17 @@ async def recv_gender_video(update, context):
         if video_id:
             gdata["videos"].append(video_id)
         save_settings(chat_id, settings)
+    
+    # Show confirmation with counts
+    msg_count = len(gdata['messages'])
+    video_count = len(gdata['videos'])
+    
     await update.message.reply_text(
-        f"✅ *{gender.capitalize()} setup complete\\!*\n"
-        f"📝 Messages: `{len(gdata['messages'])}` | 🎥 Videos: `{len(gdata['videos'])}`",
+        f"✅ *{gender.capitalize()} setup COMPLETE!* 🎉\n\n"
+        f"📝 *Message saved:* `{msg_count}` message(s)\n"
+        f"🎬 *Video saved:* `{video_count}` video(s)\n\n"
+        f"✨ *Welcome message + video ready!*\n"
+        f"Jab koi {gender} member join karega, ye randomly select hoga.",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     return ConversationHandler.END
@@ -284,12 +307,22 @@ async def skip_video(update, context):
     if not msg:
         await update.message.reply_text("❌ Pehle message to bhejo.")
         return ConversationHandler.END
+    
     for chat_id in context.user_data.get("linked", []):
         settings = get_settings(chat_id)
         gdata = settings.setdefault(gender, {"messages": [], "videos": []})
         gdata["messages"].append(msg)
         save_settings(chat_id, settings)
-    await update.message.reply_text(f"✅ Video skip kiya. Sirf message save hua for {gender}.")
+    
+    msg_count = len(gdata['messages'])
+    
+    await update.message.reply_text(
+        f"✅ *{gender.capitalize()} message saved (no video)!* 📝\n\n"
+        f"📝 *Total messages:* `{msg_count}`\n"
+        f"🎬 *Video:* Skipped (None)\n\n"
+        f"✨ *Welcome message ready!* (bina video ke)",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
     return ConversationHandler.END
 
 # ---------- /add_more ----------
@@ -320,7 +353,12 @@ async def more_gender_callback(update, context):
 
 async def recv_more_msg(update, context):
     context.user_data["msg"] = update.message.text
-    await update.message.reply_text("✅ Message noted. Ab *video bhejo* (ya /skip)", parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(
+        f"✅ *New message noted!* 📝\n\n"
+        f"Ab *video bhejo* (ya /skip)\n"
+        f"Video bhejte hi *dono save ho jayenge*!",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
     return WAITING_MORE_VIDEO
 
 async def recv_more_video(update, context):
@@ -329,6 +367,7 @@ async def recv_more_video(update, context):
     video_id = None
     if update.message.video:
         video_id = update.message.video.file_id
+    
     for chat_id in context.user_data["linked"]:
         settings = get_settings(chat_id)
         gdata = settings.setdefault(gender, {"messages": [], "videos": []})
@@ -337,7 +376,13 @@ async def recv_more_video(update, context):
         if video_id:
             gdata["videos"].append(video_id)
         save_settings(chat_id, settings)
-    await update.message.reply_text(f"✅ {gender.capitalize()} ke liye naya media add ho gaya!")
+    
+    await update.message.reply_text(
+        f"✅ *New media added for {gender.capitalize()}!* 🎉\n\n"
+        f"📝 Total messages: `{len(gdata['messages'])}`\n"
+        f"🎬 Total videos: `{len(gdata['videos'])}`",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
     return ConversationHandler.END
 
 # ---------- /listmedia, /clearmedia, /preview, /settings, /setbuttons, /reset ----------
@@ -594,7 +639,7 @@ def main():
 
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🚀 Bot started with GROQ API (llama-3.1-8b-instant)")
+    logger.info("🚀 Bot started with improved gender detection + video confirmation")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
