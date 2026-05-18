@@ -1,16 +1,14 @@
+#!/usr/bin/env python3
 """
-🌹 Welcome Bot - Professional Telegram Group Welcome Bot
-Features: Gender detection via GROQ API, custom messages, multiple media support
+Welcome Bot Gender Detection + Full Feature Set
+Commands: /set_male, /set_female, /add_more, /setbuttons, /preview, /reset etc.
 """
 
 import os
 import logging
-import random
 import json
-import re
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
-)
+import random
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
     ContextTypes, filters, ConversationHandler, CallbackQueryHandler
@@ -19,90 +17,71 @@ from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from groq import Groq
 
-# ─── Logging ────────────────────────────────────────────────────────────────
+# ---------- Logging ----------
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ─── Config ──────────────────────────────────────────────────────────────────
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+# ---------- Config ----------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
+DATA_FILE = "welcome_bot_data.json"
 
-# ─── Database Class (JSON file) ─────────────────────────────────────────────
-class Database:
-    def __init__(self, file_path="data.json"):
-        self.file_path = file_path
-        self.data = self._load()
-
-    def _load(self):
-        try:
-            with open(self.file_path, "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    def _save(self):
-        with open(self.file_path, "w") as f:
-            json.dump(self.data, f, indent=2)
-
-    def get_settings(self, chat_id):
-        chat_id = str(chat_id)
-        return self.data.get(chat_id, {
-            "active": False,
-            "admins": [],
-            "male": {"messages": [], "videos": []},
-            "female": {"messages": [], "videos": []},
-            "unknown": {"messages": [], "videos": []},
-            "buttons": [],
-            "chat_title": ""
-        })
-
-    def save_settings(self, chat_id, settings):
-        self.data[str(chat_id)] = settings
-        self._save()
-
-    def delete_settings(self, chat_id):
-        if str(chat_id) in self.data:
-            del self.data[str(chat_id)]
-            self._save()
-
-    def get_linked_chats(self, user_id):
-        """Returns list of chat_ids where this user is admin"""
-        linked = []
-        for chat_id, settings in self.data.items():
-            if user_id in settings.get("admins", []):
-                linked.append(int(chat_id))
-        return linked
-
-db = Database("data.json")
+# Initialize GROQ client
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ─── States for ConversationHandler ─────────────────────────────────────────
-WAITING_MALE_MSG   = 1
-WAITING_MALE_VIDEO = 2
-WAITING_FEMALE_MSG = 3
-WAITING_FEMALE_VIDEO = 4
-WAITING_BUTTON_TEXT = 5
-WAITING_BUTTON_URL  = 6
-WAITING_MORE_GENDER = 7
-WAITING_MORE_MSG    = 8
-WAITING_MORE_VIDEO  = 9
+# ---------- Database Helper ----------
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
-# ─── Gender Detection via GROQ ───────────────────────────────────────────────
+def save_data(data):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_settings(chat_id):
+    data = load_data()
+    return data.get(str(chat_id), {
+        "active": False,
+        "admins": [],
+        "chat_title": "",
+        "male": {"messages": [], "videos": []},
+        "female": {"messages": [], "videos": []},
+        "unknown": {"messages": [], "videos": []},
+        "buttons": []
+    })
+
+def save_settings(chat_id, settings):
+    data = load_data()
+    data[str(chat_id)] = settings
+    save_data(data)
+
+def delete_settings(chat_id):
+    data = load_data()
+    data.pop(str(chat_id), None)
+    save_data(data)
+
+def get_linked_chats(user_id):
+    data = load_data()
+    return [int(cid) for cid, s in data.items() if user_id in s.get("admins", [])]
+
+# ---------- GROQ Gender Detection (NEW WORKING MODEL) ----------
 async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
-    """Use GROQ LLM to detect gender from name. Returns 'male', 'female', or 'unknown'."""
+    """Use GROQ LLM to detect gender. Returns 'male', 'female', or 'unknown'."""
     try:
         full_name = f"{first_name} {last_name}".strip()
         prompt = (
             f"Based on the name '{full_name}' (username: @{username}), determine the gender.\n"
             "Reply with ONLY one word: 'male', 'female', or 'unknown'.\n"
             "Consider Indian, Arabic, English, and international names.\n"
-            "If the name is ambiguous or you're not sure, reply 'unknown'."
+            "If unsure, reply 'unknown'."
         )
         response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",  # ✅ Working model (not decommissioned)
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10,
             temperature=0.1,
@@ -118,646 +97,485 @@ async def detect_gender(first_name: str, last_name: str = "", username: str = ""
         logger.error(f"GROQ gender detection error: {e}")
         return "unknown"
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ---------- Helper Functions ----------
 def esc(text: str) -> str:
-    """Escape MarkdownV2 special characters."""
     return escape_markdown(text, version=2)
 
-async def send_welcome(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user, gender: str):
-    """Send the appropriate welcome message + video to the group."""
-    settings = db.get_settings(chat_id)
-    gender_data = settings.get(gender, {"messages": [], "videos": []})
-
-    messages = gender_data.get("messages", [])
-    videos   = gender_data.get("videos", [])
-    buttons  = settings.get("buttons", [])
+async def send_welcome(context, chat_id, user, gender_key):
+    """gender_key = 'male', 'female', or 'unknown'"""
+    settings = get_settings(chat_id)
+    gdata = settings.get(gender_key, {"messages": [], "videos": []})
+    messages = gdata.get("messages", [])
+    videos = gdata.get("videos", [])
+    buttons = settings.get("buttons", [])
 
     if not messages:
-        # fallback
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"👋 Welcome {user.first_name}!",
-        )
+        fallback = f"👋 Welcome {user.first_name}!"
+        await context.bot.send_message(chat_id=chat_id, text=fallback)
         return
 
-    # Pick random message and video
     msg_template = random.choice(messages)
-    video_id     = random.choice(videos) if videos else None
-
+    gender_label = "👦 Male" if gender_key == "male" else "👧 Female" if gender_key == "female" else "🧑 Member"
+    
     # Replace placeholders
     name_mention = f"[{user.first_name}](tg://user?id={user.id})"
     msg = msg_template.replace("{name}", user.first_name)
     msg = msg.replace("{mention}", name_mention)
     msg = msg.replace("{username}", f"@{user.username}" if user.username else user.first_name)
-    msg = msg.replace("{gender}", "👦 Male" if gender == "male" else "👧 Female" if gender == "female" else "🧑 Member")
+    msg = msg.replace("{gender}", gender_label)
 
-    # Build inline keyboard
-    keyboard = []
+    video_id = random.choice(videos) if videos else None
+
+    # Inline keyboard
+    kb = []
     for btn in buttons:
-        keyboard.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        kb.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
+    reply_markup = InlineKeyboardMarkup(kb) if kb else None
 
     try:
         if video_id:
             await context.bot.send_video(
-                chat_id=chat_id,
-                video=video_id,
-                caption=msg,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
+                chat_id=chat_id, video=video_id,
+                caption=msg, parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
             )
         else:
             await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg,
+                chat_id=chat_id, text=msg,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup,
+                reply_markup=reply_markup
             )
     except Exception as e:
-        logger.error(f"Error sending welcome: {e}")
+        logger.error(f"Send welcome error: {e}")
         await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user.first_name}!")
 
-# ─── New Member Handler ───────────────────────────────────────────────────────
-async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Triggered when a new member joins or is approved."""
-    result = update.chat_member
-    chat_id = result.chat.id
+# ---------- Conversation States ----------
+WAITING_MALE_MSG, WAITING_MALE_VIDEO = 1, 2
+WAITING_FEMALE_MSG, WAITING_FEMALE_VIDEO = 3, 4
+WAITING_UNKNOWN_MSG, WAITING_UNKNOWN_VIDEO = 5, 6
+WAITING_BUTTON_TEXT, WAITING_BUTTON_URL = 7, 8
+WAITING_MORE_GENDER, WAITING_MORE_MSG, WAITING_MORE_VIDEO = 9, 10, 11
 
-    settings = db.get_settings(chat_id)
-    if not settings.get("active", False):
-        return
+# ---------- Admin Check ----------
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id=None):
+    user_id = update.effective_user.id
+    target = chat_id or update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return True
+    try:
+        admins = await context.bot.get_chat_administrators(target)
+        return user_id in [a.user.id for a in admins]
+    except:
+        return False
 
-    new_member = result.new_chat_member
-    old_member = result.old_chat_member
-
-    # Only trigger on join (pending → member or left → member)
-    valid_transitions = [
-        (ChatMember.LEFT, ChatMember.MEMBER),
-        (ChatMember.BANNED, ChatMember.MEMBER),
-        (ChatMember.RESTRICTED, ChatMember.MEMBER),
-    ]
-    transition = (old_member.status, new_member.status)
-    if transition not in valid_transitions:
-        return
-
-    user = new_member.user
-    if user.is_bot:
-        return
-
-    # Detect gender
-    gender = await detect_gender(
-        user.first_name,
-        user.last_name or "",
-        user.username or ""
-    )
-    logger.info(f"New member: {user.first_name} | Gender: {gender}")
-
-    await send_welcome(context, chat_id, user, gender)
-
-# ─── /start Command ───────────────────────────────────────────────────────────
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- /connect Command (in group) ----------
+async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if chat.type != "private":
-        await update.message.reply_text("ℹ️ Ye bot DM mein use karo. Pehle group mein /connect karo.")
+    user = update.effective_user
+    if chat.type == "private":
+        await update.message.reply_text("❌ Ye command group mein use karo!")
         return
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Sirf group admins /connect kar sakte hain.")
+        return
+    # Check if bot is admin
+    bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
+    if bot_member.status != "administrator":
+        await update.message.reply_text("⚠️ Pehle mujhe group *admin* banao. Phir /connect karo.", parse_mode=ParseMode.MARKDOWN)
+        return
+    settings = get_settings(chat.id)
+    if user.id not in settings["admins"]:
+        settings["admins"].append(user.id)
+    settings["active"] = True
+    settings["chat_title"] = chat.title
+    save_settings(chat.id, settings)
 
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📩 Bot DM mein settings", url=f"https://t.me/{context.bot.username}")
+    ]])
+    await update.message.reply_text(
+        f"✅ Bot connected to *{chat.title}*\\!\n\n"
+        f"Ab DM mein jaakar /set\\_male, /set\\_female, /set\\_unknown use karo\\.",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=keyboard
+    )
+
+# ---------- /start ----------
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("ℹ️ DM mein use karo.")
+        return
     text = (
-        "🌹 *Welcome Bot* — Simple Setup\n\n"
-        "*Pehle group mein /connect use karo\\.*\n"
-        "Phir DM mein aake ye commands use kar:\n\n"
-        "▪ /set\\_male — male message \\+ video add\n"
-        "▪ /set\\_female — female message \\+ video add\n"
+        "🌹 *Welcome Bot* \\- GROQ AI Detection\n\n"
+        "▪ /set\\_male — male message \\+ video\n"
+        "▪ /set\\_female — female message \\+ video\n"
+        "▪ /set\\_unknown — unknown gender message \\+ video\n"
         "▪ /add\\_more — aur messages/videos add karo\n"
         "▪ /listmedia — media count dekho\n"
         "▪ /clearmedia — sab media clear karo\n"
         "▪ /preview — test welcome message\n"
         "▪ /settings — current config dekho\n"
         "▪ /setbuttons — inline buttons set karo\n"
-        "▪ /reset — sab settings delete karo\n"
+        "▪ /reset — sab settings delete karo\n\n"
+        "*Pehle group mein /connect karo\\!*"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
-# ─── /connect Command (in group) ─────────────────────────────────────────────
-async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.type == "private":
-        await update.message.reply_text("❌ Ye command group mein use karo!")
-        return
-
-    # Check if user is group admin
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    if member.status not in ["administrator", "creator"]:
-        await update.message.reply_text("❌ Sirf group admins /connect kar sakte hain.")
-        return
-
-    settings = db.get_settings(chat.id)
-    if user.id not in settings.get("admins", []):
-        settings.setdefault("admins", []).append(user.id)
-    settings["active"] = True
-    settings["chat_title"] = chat.title
-    db.save_settings(chat.id, settings)
-
-    # Button to open bot DM
-    bot_username = context.bot.username
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📩 Bot DM mein jaakar settings karein", url=f"https://t.me/{bot_username}")]
-    ])
-
-    await update.message.reply_text(
-        f"✅ Bot connected to *{chat.title}*\\!\n\n"
-        f"Ab neeche diye gaye button par click karein aur DM mein settings karein\\.",
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=keyboard
-    )
-
-# ─── /set_male ConversationHandler ───────────────────────────────────────────
-async def cmd_set_male(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- Generic Setup Handlers ----------
+async def setup_start(update, context, gender):
     if update.effective_chat.type != "private":
-        await update.message.reply_text("❌ DM mein use karo.")
         return ConversationHandler.END
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Pehle group mein /connect karo.")
         return ConversationHandler.END
-
-    context.user_data["setting_gender"] = "male"
-    context.user_data["linked_chats"] = linked
+    context.user_data["gender"] = gender
+    context.user_data["linked"] = linked
     await update.message.reply_text(
-        "👦 *Male Welcome Message Set Karo*\n\n"
-        "Apna welcome message type karo\\.\n"
-        "Placeholders use kar sakte ho:\n"
-        "`{name}` — member ka naam\n"
-        "`{mention}` — clickable mention\n"
-        "`{username}` — @username\n"
-        "`{gender}` — gender label\n\n"
-        "Message exactly jaisa type karoge waisa hi send hoga\\.",
+        f"{'👦' if gender=='male' else '👧' if gender=='female' else '🧑'} *{gender.capitalize()} welcome message likho:*\n"
+        "Placeholders: `{name}`, `{mention}`, `{username}`, `{gender}`\n\n"
+        "Example: `Welcome {name}! {gender} member ho aap.`",
         parse_mode=ParseMode.MARKDOWN_V2
     )
-    return WAITING_MALE_MSG
+    state_map = {"male": WAITING_MALE_MSG, "female": WAITING_FEMALE_MSG, "unknown": WAITING_UNKNOWN_MSG}
+    return state_map[gender]
 
-async def recv_male_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_message"] = update.message.text
+async def cmd_set_male(update, context): return await setup_start(update, context, "male")
+async def cmd_set_female(update, context): return await setup_start(update, context, "female")
+async def cmd_set_unknown(update, context): return await setup_start(update, context, "unknown")
+
+async def recv_gender_msg(update, context):
+    context.user_data["msg"] = update.message.text
+    gender = context.user_data["gender"]
     await update.message.reply_text(
-        "✅ Message saved\\!\n\n"
-        "Ab male ke liye *video send karo* \\(ya /skip karo\\)\\.",
+        f"✅ Message saved\\! Ab {gender} ke liye *video bhejo* \\(ya /skip\\)\\.",
         parse_mode=ParseMode.MARKDOWN_V2
     )
-    return WAITING_MALE_VIDEO
+    state_map = {"male": WAITING_MALE_VIDEO, "female": WAITING_FEMALE_VIDEO, "unknown": WAITING_UNKNOWN_VIDEO}
+    return state_map[gender]
 
-async def save_male_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gender = context.user_data.get("setting_gender")
-    if gender != "male":
-        logger.error(f"Gender mismatch in save_male_video: {gender}")
-        await update.message.reply_text("❌ Kuch gadbad hui, /cancel karke dubara try karo.")
-        return ConversationHandler.END
-
-    msg = context.user_data.get("new_message", "")
+async def recv_gender_video(update, context):
+    gender = context.user_data["gender"]
+    msg = context.user_data.get("msg", "")
     video_id = None
     if update.message.video:
         video_id = update.message.video.file_id
     elif update.message.document and update.message.document.mime_type.startswith("video"):
         video_id = update.message.document.file_id
-
-    for chat_id in context.user_data.get("linked_chats", []):
-        settings = db.get_settings(chat_id)
-        g_data = settings.setdefault(gender, {"messages": [], "videos": []})
+    for chat_id in context.user_data.get("linked", []):
+        settings = get_settings(chat_id)
+        gdata = settings.setdefault(gender, {"messages": [], "videos": []})
         if msg:
-            g_data["messages"].append(msg)
+            gdata["messages"].append(msg)
         if video_id:
-            g_data["videos"].append(video_id)
-        db.save_settings(chat_id, settings)
-
-    # Get final counts from first chat (for display)
-    first_chat = context.user_data["linked_chats"][0]
-    final_settings = db.get_settings(first_chat)
-    count_msg   = len(final_settings.get(gender, {}).get("messages", []))
-    count_video = len(final_settings.get(gender, {}).get("videos", []))
-
+            gdata["videos"].append(video_id)
+        save_settings(chat_id, settings)
     await update.message.reply_text(
-        f"✅ *Male setup complete\\!*\n"
-        f"📝 Messages: `{count_msg}` | 🎥 Videos: `{count_video}`",
+        f"✅ *{gender.capitalize()} setup complete\\!*\n"
+        f"📝 Messages: `{len(gdata['messages'])}` | 🎥 Videos: `{len(gdata['videos'])}`",
         parse_mode=ParseMode.MARKDOWN_V2
     )
-    # Clear user_data to avoid leftover
-    context.user_data.clear()
     return ConversationHandler.END
 
-# ─── /set_female ConversationHandler ─────────────────────────────────────────
-async def cmd_set_female(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("❌ DM mein use karo.")
-        return ConversationHandler.END
-
-    user = update.effective_user
-    linked = db.get_linked_chats(user.id)
-    if not linked:
-        await update.message.reply_text("❌ Pehle group mein /connect karo.")
-        return ConversationHandler.END
-
-    context.user_data["setting_gender"] = "female"
-    context.user_data["linked_chats"] = linked
-    await update.message.reply_text(
-        "👧 *Female Welcome Message Set Karo*\n\n"
-        "Apna welcome message type karo\\.\n"
-        "Placeholders:\n"
-        "`{name}` `{mention}` `{username}` `{gender}`\n\n"
-        "Message exactly jaisa type karoge waisa hi send hoga\\.",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    return WAITING_FEMALE_MSG
-
-async def recv_female_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_message"] = update.message.text
-    await update.message.reply_text(
-        "✅ Message saved\\!\n\nAb female ke liye *video send karo* \\(ya /skip karo\\)\\.",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    return WAITING_FEMALE_VIDEO
-
-async def save_female_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gender = context.user_data.get("setting_gender")
-    if gender != "female":
-        logger.error(f"Gender mismatch in save_female_video: {gender}")
-        await update.message.reply_text("❌ Kuch gadbad hui, /cancel karke dubara try karo.")
-        return ConversationHandler.END
-
-    msg = context.user_data.get("new_message", "")
-    video_id = None
-    if update.message.video:
-        video_id = update.message.video.file_id
-    elif update.message.document and update.message.document.mime_type.startswith("video"):
-        video_id = update.message.document.file_id
-
-    for chat_id in context.user_data.get("linked_chats", []):
-        settings = db.get_settings(chat_id)
-        g_data = settings.setdefault(gender, {"messages": [], "videos": []})
-        if msg:
-            g_data["messages"].append(msg)
-        if video_id:
-            g_data["videos"].append(video_id)
-        db.save_settings(chat_id, settings)
-
-    first_chat = context.user_data["linked_chats"][0]
-    final_settings = db.get_settings(first_chat)
-    count_msg   = len(final_settings.get(gender, {}).get("messages", []))
-    count_video = len(final_settings.get(gender, {}).get("videos", []))
-
-    await update.message.reply_text(
-        f"✅ *Female setup complete\\!*\n"
-        f"📝 Messages: `{count_msg}` | 🎥 Videos: `{count_video}`",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def skip_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gender = context.user_data.get("setting_gender")
-    if not gender:
-        await update.message.reply_text("❌ Pehle /set_male ya /set_female karo.")
-        return ConversationHandler.END
-
-    msg = context.user_data.get("new_message", "")
+async def skip_video(update, context):
+    gender = context.user_data.get("gender")
+    msg = context.user_data.get("msg", "")
     if not msg:
         await update.message.reply_text("❌ Pehle message to bhejo.")
         return ConversationHandler.END
-
-    for chat_id in context.user_data.get("linked_chats", []):
-        settings = db.get_settings(chat_id)
-        g_data = settings.setdefault(gender, {"messages": [], "videos": []})
-        if msg:
-            g_data["messages"].append(msg)
-        db.save_settings(chat_id, settings)
-
-    await update.message.reply_text(f"✅ Video skip kiya. {gender.capitalize()} ka message save ho gaya!", parse_mode=ParseMode.MARKDOWN_V2)
-    context.user_data.clear()
+    for chat_id in context.user_data.get("linked", []):
+        settings = get_settings(chat_id)
+        gdata = settings.setdefault(gender, {"messages": [], "videos": []})
+        gdata["messages"].append(msg)
+        save_settings(chat_id, settings)
+    await update.message.reply_text(f"✅ Video skip kiya. Sirf message save hua for {gender}.")
     return ConversationHandler.END
 
-# ─── /add_more Command ───────────────────────────────────────────────────────
-async def cmd_add_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- /add_more ----------
+async def cmd_add_more(update, context):
     if update.effective_chat.type != "private":
-        await update.message.reply_text("❌ DM mein use karo.")
         return ConversationHandler.END
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
-        await update.message.reply_text("❌ Pehle group mein /connect karo.")
+        await update.message.reply_text("❌ Pehle /connect karo.")
         return ConversationHandler.END
-
-    context.user_data["linked_chats"] = linked
-    keyboard = InlineKeyboardMarkup([
+    context.user_data["linked"] = linked
+    kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("👦 Male", callback_data="more_male"),
-         InlineKeyboardButton("👧 Female", callback_data="more_female")]
+         InlineKeyboardButton("👧 Female", callback_data="more_female"),
+         InlineKeyboardButton("🧑 Unknown", callback_data="more_unknown")]
     ])
-    await update.message.reply_text(
-        "➕ *Aur Media/Message Add Karo*\n\nKiske liye add karna hai?",
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("➕ *Aur media add karna hai?* Kiske liye?", parse_mode=ParseMode.MARKDOWN_V2, reply_markup=kb)
     return WAITING_MORE_GENDER
 
-async def more_gender_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def more_gender_callback(update, context):
     query = update.callback_query
     await query.answer()
-    gender = "male" if query.data == "more_male" else "female"
-    context.user_data["setting_gender"] = gender
-    await query.edit_message_text(
-        f"Type karo naya {'👦 male' if gender == 'male' else '👧 female'} *welcome message*\\:",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    gender = query.data.split("_")[1]
+    context.user_data["gender"] = gender
+    await query.edit_message_text(f"{gender.capitalize()} ke liye naya *message* likho:", parse_mode=ParseMode.MARKDOWN_V2)
     return WAITING_MORE_MSG
 
-async def recv_more_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_message"] = update.message.text
-    await update.message.reply_text(
-        "✅ Message noted\\! Ab *video send karo* \\(ya /skip karo\\)\\.",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+async def recv_more_msg(update, context):
+    context.user_data["msg"] = update.message.text
+    await update.message.reply_text("✅ Message noted. Ab *video bhejo* (ya /skip)", parse_mode=ParseMode.MARKDOWN_V2)
     return WAITING_MORE_VIDEO
 
-async def save_more_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gender = context.user_data.get("setting_gender")
-    msg = context.user_data.get("new_message", "")
+async def recv_more_video(update, context):
+    gender = context.user_data["gender"]
+    msg = context.user_data.get("msg", "")
     video_id = None
     if update.message.video:
         video_id = update.message.video.file_id
-    elif update.message.document and update.message.document.mime_type.startswith("video"):
-        video_id = update.message.document.file_id
-
-    for chat_id in context.user_data.get("linked_chats", []):
-        settings = db.get_settings(chat_id)
-        g_data = settings.setdefault(gender, {"messages": [], "videos": []})
+    for chat_id in context.user_data["linked"]:
+        settings = get_settings(chat_id)
+        gdata = settings.setdefault(gender, {"messages": [], "videos": []})
         if msg:
-            g_data["messages"].append(msg)
+            gdata["messages"].append(msg)
         if video_id:
-            g_data["videos"].append(video_id)
-        db.save_settings(chat_id, settings)
-
-    await update.message.reply_text(f"✅ {gender.capitalize()} ke liye naya media add ho gaya!", parse_mode=ParseMode.MARKDOWN_V2)
-    context.user_data.clear()
+            gdata["videos"].append(video_id)
+        save_settings(chat_id, settings)
+    await update.message.reply_text(f"✅ {gender.capitalize()} ke liye naya media add ho gaya!")
     return ConversationHandler.END
 
-# ─── /listmedia Command ──────────────────────────────────────────────────────
-async def cmd_listmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- /listmedia, /clearmedia, /preview, /settings, /setbuttons, /reset ----------
+async def cmd_listmedia(update, context):
     if update.effective_chat.type != "private":
         return
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-
     text = "📊 *Media Count*\n\n"
     for chat_id in linked:
-        settings = db.get_settings(chat_id)
+        settings = get_settings(chat_id)
         title = settings.get("chat_title", str(chat_id))
-        m_msgs   = len(settings.get("male", {}).get("messages", []))
-        m_vids   = len(settings.get("male", {}).get("videos", []))
-        f_msgs   = len(settings.get("female", {}).get("messages", []))
-        f_vids   = len(settings.get("female", {}).get("videos", []))
-        text += (
-            f"*{esc(title)}*\n"
-            f"👦 Male: `{m_msgs}` msgs, `{m_vids}` videos\n"
-            f"👧 Female: `{f_msgs}` msgs, `{f_vids}` videos\n\n"
-        )
-
+        for g in ["male", "female", "unknown"]:
+            msgs = len(settings.get(g, {}).get("messages", []))
+            vids = len(settings.get(g, {}).get("videos", []))
+            icon = "👦" if g=="male" else "👧" if g=="female" else "🧑"
+            text += f"*{esc(title)}* {icon} {g.capitalize()}: `{msgs}` msgs, `{vids}` vids\n"
+        text += "\n"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
-# ─── /clearmedia Command ─────────────────────────────────────────────────────
-async def cmd_clearmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_clearmedia(update, context):
     if update.effective_chat.type != "private":
         return
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Haan, Clear Karo", callback_data="confirm_clear"),
          InlineKeyboardButton("❌ Nahi", callback_data="cancel_clear")]
     ])
-    await update.message.reply_text(
-        "⚠️ *Sab media clear karna chahte ho?*\nYe undo nahi ho sakta\\.",
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("⚠️ *Sab media clear karna chahte ho?*", parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
 
-async def clearmedia_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def clearmedia_callback(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == "confirm_clear":
         user = update.effective_user
-        linked = db.get_linked_chats(user.id)
+        linked = get_linked_chats(user.id)
         for chat_id in linked:
-            settings = db.get_settings(chat_id)
+            settings = get_settings(chat_id)
             settings["male"] = {"messages": [], "videos": []}
             settings["female"] = {"messages": [], "videos": []}
-            db.save_settings(chat_id, settings)
-        await query.edit_message_text("✅ Sab media clear ho gaya\\!", parse_mode=ParseMode.MARKDOWN_V2)
+            settings["unknown"] = {"messages": [], "videos": []}
+            save_settings(chat_id, settings)
+        await query.edit_message_text("✅ Sab media clear ho gaya!", parse_mode=ParseMode.MARKDOWN_V2)
     else:
-        await query.edit_message_text("❌ Cancel kiya\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("❌ Cancel.", parse_mode=ParseMode.MARKDOWN_V2)
 
-# ─── /preview Command ────────────────────────────────────────────────────────
-async def cmd_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_preview(update, context):
     if update.effective_chat.type != "private":
         return
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-
-    await update.message.reply_text("🔍 Preview bhej raha hoon DM mein hi...")
+    await update.message.reply_text("🔍 Preview bhej raha hoon (DM mein hi)...")
     for chat_id in linked:
-        settings = db.get_settings(chat_id)
-        await update.message.reply_text(f"👦 *Male Preview for {settings.get('chat_title', chat_id)}:*", parse_mode=ParseMode.MARKDOWN_V2)
-        await send_welcome(context, update.effective_chat.id, user, "male")
-        await update.message.reply_text(f"👧 *Female Preview:*", parse_mode=ParseMode.MARKDOWN_V2)
-        await send_welcome(context, update.effective_chat.id, user, "female")
+        settings = get_settings(chat_id)
+        title = settings.get("chat_title", str(chat_id))
+        for g in ["male", "female", "unknown"]:
+            await update.message.reply_text(f"📌 *{esc(title)} - {g.capitalize()} Preview:*", parse_mode=ParseMode.MARKDOWN_V2)
+            await send_welcome(context, update.effective_chat.id, user, g)
 
-# ─── /settings Command ───────────────────────────────────────────────────────
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_settings(update, context):
     if update.effective_chat.type != "private":
         return
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-
     for chat_id in linked:
-        settings = db.get_settings(chat_id)
-        title    = settings.get("chat_title", str(chat_id))
-        active   = "✅ Active" if settings.get("active") else "❌ Inactive"
-        m_msgs   = len(settings.get("male", {}).get("messages", []))
-        m_vids   = len(settings.get("male", {}).get("videos", []))
-        f_msgs   = len(settings.get("female", {}).get("messages", []))
-        f_vids   = len(settings.get("female", {}).get("videos", []))
-        btns     = len(settings.get("buttons", []))
-
-        text = (
-            f"⚙️ *Settings — {esc(title)}*\n\n"
-            f"Status: {active}\n"
-            f"👦 Male: `{m_msgs}` msgs, `{m_vids}` videos\n"
-            f"👧 Female: `{f_msgs}` msgs, `{f_vids}` videos\n"
-            f"🔘 Buttons: `{btns}`\n"
-        )
+        settings = get_settings(chat_id)
+        title = settings.get("chat_title", str(chat_id))
+        active = "✅ Active" if settings.get("active") else "❌ Inactive"
+        btns = len(settings.get("buttons", []))
+        text = f"⚙️ *Settings — {esc(title)}*\n\nStatus: {active}\n🔘 Buttons: {btns}\n"
+        for g in ["male", "female", "unknown"]:
+            msgs = len(settings.get(g, {}).get("messages", []))
+            vids = len(settings.get(g, {}).get("videos", []))
+            icon = "👦" if g=="male" else "👧" if g=="female" else "🧑"
+            text += f"{icon} {g.capitalize()}: `{msgs}` msgs, `{vids}` vids\n"
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
-# ─── /setbuttons ConversationHandler ─────────────────────────────────────────
-async def cmd_setbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_setbuttons(update, context):
     if update.effective_chat.type != "private":
         return ConversationHandler.END
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
-        await update.message.reply_text("❌ Pehle group mein /connect karo.")
+        await update.message.reply_text("❌ Pehle /connect karo.")
         return ConversationHandler.END
-
-    context.user_data["linked_chats"] = linked
-    await update.message.reply_text(
-        "🔘 *Inline Button Set Karo*\n\n"
-        "Button ka *text* type karo \\(jo button pe dikhega\\)\\:",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    context.user_data["linked"] = linked
+    await update.message.reply_text("🔘 *Inline Button Set Karo*\n\nButton ka *text* type karo:", parse_mode=ParseMode.MARKDOWN_V2)
     return WAITING_BUTTON_TEXT
 
-async def recv_button_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recv_button_text(update, context):
     context.user_data["button_text"] = update.message.text
-    await update.message.reply_text(
-        "✅ Text noted\\! Ab button ki *URL* bhejo\\:",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    await update.message.reply_text("✅ Text noted! Ab button ki *URL* bhejo (http:// or https://):", parse_mode=ParseMode.MARKDOWN_V2)
     return WAITING_BUTTON_URL
 
-async def recv_button_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url  = update.message.text.strip()
+async def recv_button_url(update, context):
+    url = update.message.text.strip()
     text = context.user_data.get("button_text", "Button")
-
     if not url.startswith("http"):
-        await update.message.reply_text("❌ Valid URL bhejo \\(http:// ya https://\\)", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text("❌ Valid URL bhejo (http:// ya https://)", parse_mode=ParseMode.MARKDOWN_V2)
         return WAITING_BUTTON_URL
-
-    for chat_id in context.user_data.get("linked_chats", []):
-        settings = db.get_settings(chat_id)
+    for chat_id in context.user_data["linked"]:
+        settings = get_settings(chat_id)
         settings.setdefault("buttons", []).append({"text": text, "url": url})
-        db.save_settings(chat_id, settings)
-
-    await update.message.reply_text(
-        f"✅ Button added\\!\n`{esc(text)}` → {esc(url)}",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    context.user_data.clear()
+        save_settings(chat_id, settings)
+    await update.message.reply_text(f"✅ Button added! `{esc(text)}` → {esc(url)}", parse_mode=ParseMode.MARKDOWN_V2)
     return ConversationHandler.END
 
-# ─── /reset Command ──────────────────────────────────────────────────────────
-async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_reset(update, context):
     if update.effective_chat.type != "private":
         return
-
     user = update.effective_user
-    linked = db.get_linked_chats(user.id)
+    linked = get_linked_chats(user.id)
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🗑 Haan, Reset Karo", callback_data="confirm_reset"),
          InlineKeyboardButton("❌ Nahi", callback_data="cancel_reset")]
     ])
-    await update.message.reply_text(
-        "⚠️ *Sab settings delete karna chahte ho?*\nYe undo nahi ho sakta\\!",
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("⚠️ *Sab settings delete karna chahte ho?* Ye undo nahi ho sakta.", parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
 
-async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reset_callback(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == "confirm_reset":
         user = update.effective_user
-        linked = db.get_linked_chats(user.id)
+        linked = get_linked_chats(user.id)
         for chat_id in linked:
-            db.delete_settings(chat_id)
-        await query.edit_message_text("✅ Sab reset ho gaya\\!", parse_mode=ParseMode.MARKDOWN_V2)
+            delete_settings(chat_id)
+        await query.edit_message_text("✅ Sab reset ho gaya!", parse_mode=ParseMode.MARKDOWN_V2)
     else:
-        await query.edit_message_text("❌ Reset cancel kiya\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("❌ Cancel.", parse_mode=ParseMode.MARKDOWN_V2)
 
-# ─── Cancel Handler ───────────────────────────────────────────────────────────
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Operation cancel kiya\\.", parse_mode=ParseMode.MARKDOWN_V2)
+async def cancel(update, context):
+    await update.message.reply_text("❌ Operation cancel kiya.", parse_mode=ParseMode.MARKDOWN_V2)
     context.user_data.clear()
     return ConversationHandler.END
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# ---------- New Member Handler (GROQ Detection) ----------
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.chat_member:
+        return
+    cm = update.chat_member
+    old = cm.old_chat_member.status
+    new = cm.new_chat_member.status
+    valid = [
+        (ChatMember.LEFT, ChatMember.MEMBER),
+        (ChatMember.BANNED, ChatMember.MEMBER),
+        (ChatMember.RESTRICTED, ChatMember.MEMBER),
+        (ChatMember.LEFT, ChatMember.RESTRICTED)
+    ]
+    if (old, new) not in valid:
+        return
+    new_member = cm.new_chat_member.user
+    chat_id = cm.chat.id
+    if new_member.is_bot:
+        return
+    settings = get_settings(chat_id)
+    if not settings.get("active"):
+        return
+
+    # GROQ gender detection
+    gender = await detect_gender(
+        new_member.first_name,
+        new_member.last_name or "",
+        new_member.username or ""
+    )
+    logger.info(f"New member: {new_member.first_name} | GROQ gender: {gender}")
+
+    await send_welcome(context, chat_id, new_member, gender)
+
+# ---------- Main ----------
 def main():
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("❌ Please set BOT_TOKEN environment variable.")
+        return
+    if not GROQ_API_KEY or GROQ_API_KEY == "YOUR_GROQ_API_KEY_HERE":
+        print("❌ Please set GROQ_API_KEY environment variable.")
+        return
+
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Male setup conversation
+    # Conversation handlers
     male_conv = ConversationHandler(
         entry_points=[CommandHandler("set_male", cmd_set_male)],
         states={
-            WAITING_MALE_MSG:   [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_male_msg)],
-            WAITING_MALE_VIDEO: [
-                MessageHandler(filters.VIDEO | filters.Document.VIDEO, save_male_video),
-                CommandHandler("skip", skip_video),
-            ],
+            WAITING_MALE_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_gender_msg)],
+            WAITING_MALE_VIDEO: [MessageHandler(filters.VIDEO | filters.Document.VIDEO, recv_gender_video), CommandHandler("skip", skip_video)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True, per_chat=True,
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-
-    # Female setup conversation
     female_conv = ConversationHandler(
         entry_points=[CommandHandler("set_female", cmd_set_female)],
         states={
-            WAITING_FEMALE_MSG:   [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_female_msg)],
-            WAITING_FEMALE_VIDEO: [
-                MessageHandler(filters.VIDEO | filters.Document.VIDEO, save_female_video),
-                CommandHandler("skip", skip_video),
-            ],
+            WAITING_FEMALE_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_gender_msg)],
+            WAITING_FEMALE_VIDEO: [MessageHandler(filters.VIDEO | filters.Document.VIDEO, recv_gender_video), CommandHandler("skip", skip_video)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True, per_chat=True,
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-
-    # Add more conversation
+    unknown_conv = ConversationHandler(
+        entry_points=[CommandHandler("set_unknown", cmd_set_unknown)],
+        states={
+            WAITING_UNKNOWN_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_gender_msg)],
+            WAITING_UNKNOWN_VIDEO: [MessageHandler(filters.VIDEO | filters.Document.VIDEO, recv_gender_video), CommandHandler("skip", skip_video)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
     more_conv = ConversationHandler(
         entry_points=[CommandHandler("add_more", cmd_add_more)],
         states={
             WAITING_MORE_GENDER: [CallbackQueryHandler(more_gender_callback, pattern="^more_")],
-            WAITING_MORE_MSG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_more_msg)],
-            WAITING_MORE_VIDEO:  [
-                MessageHandler(filters.VIDEO | filters.Document.VIDEO, save_more_video),
-                CommandHandler("skip", skip_video),
-            ],
+            WAITING_MORE_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_more_msg)],
+            WAITING_MORE_VIDEO: [MessageHandler(filters.VIDEO | filters.Document.VIDEO, recv_more_video), CommandHandler("skip", skip_video)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True, per_chat=True,
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-
-    # Buttons conversation
     button_conv = ConversationHandler(
         entry_points=[CommandHandler("setbuttons", cmd_setbuttons)],
         states={
             WAITING_BUTTON_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_button_text)],
-            WAITING_BUTTON_URL:  [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_button_url)],
+            WAITING_BUTTON_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_button_url)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_user=True, per_chat=True,
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
 
-    # Register handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("connect", cmd_connect))
     app.add_handler(CommandHandler("listmedia", cmd_listmedia))
@@ -767,18 +585,17 @@ def main():
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(male_conv)
     app.add_handler(female_conv)
+    app.add_handler(unknown_conv)
     app.add_handler(more_conv)
     app.add_handler(button_conv)
 
-    # Callback queries
     app.add_handler(CallbackQueryHandler(clearmedia_callback, pattern="^(confirm|cancel)_clear$"))
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset$"))
 
-    # New member handler
-    app.add_handler(ChatMemberHandler(on_new_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🌹 Welcome Bot started!")
-    app.run_polling(allowed_updates=["message", "chat_member", "callback_query"])
+    logger.info("🚀 Bot started with GROQ API (llama-3.1-8b-instant)")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
