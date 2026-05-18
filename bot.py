@@ -206,7 +206,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ DM mein use karo.")
         return
     text = (
-        "🌹 *Welcome Bot* \\- GROQ AI Detection\n\n"
+        "🌹 *Welcome Bot* \\- detect gender\n\n"
         "▪ /set\\_male — male message \\+ video\n"
         "▪ /set\\_female — female message \\+ video\n"
         "▪ /set\\_unknown — unknown gender message \\+ video\n"
