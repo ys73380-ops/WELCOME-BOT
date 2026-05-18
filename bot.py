@@ -1,17 +1,16 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║       🌹 PREMIUM WELCOME BOT                                
-║   Professional Welcome System · Gender Detection             
-║   Custom Templates · Media Support · Buttons                 
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║              🌹 PREMIUM WELCOME BOT                 
+║   Multiple Videos · Gender-Split · Template+Video Combo         
+║             ║
+╚══════════════════════════════════════════════════════════════════╝
 
-FEATURES LIKE ROSE BOT:
-✅ Beautiful formatted borders
-✅ Multiple media types (video/photo/GIF)
-✅ Inline buttons for rules/channels
-✅ Premium templates library
-✅ Gender-based personalization
-✅ Preview system
+FEATURES:
+✅ Multiple videos set kar sakte ho (male/female alag alag)
+✅ Template message + video combo
+✅ Male ko uska video+msg, Female ko uska video+msg
+✅ Random video pick from list
+✅ Inline buttons support
 """
 
 import asyncio
@@ -20,12 +19,15 @@ import logging
 import json
 import os
 import re
+import random
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from datetime import datetime
-from collections import defaultdict
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaVideo, InputMediaPhoto
+)
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ChatMemberHandler, ContextTypes, MessageHandler, filters
@@ -33,61 +35,36 @@ from telegram.ext import (
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.error import TelegramError
 
-# ============= ENVIRONMENT VARIABLES =============
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# ============================================================
+#  ENV
+# ============================================================
+BOT_TOKEN    = os.environ.get("BOT_TOKEN", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-REDIS_URL = os.environ.get("REDIS_URL", "")
+REDIS_URL    = os.environ.get("REDIS_URL", "")
 SETTINGS_FILE = os.environ.get("SETTINGS_FILE", "bot_settings.json")
 
-# ============= LOGGING =============
 logging.basicConfig(
-    format="%(asctime)s │ %(levelname)-7s │ %(message)s",
+    format="%(asctime)s │ %(levelname)-7s │ %(name)s │ %(message)s",
     level=logging.INFO, datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
 
-# ============= HELPER FUNCTIONS =============
+# ============================================================
+#  MARKDOWN ESCAPE (MarkdownV2)
+# ============================================================
 def esc(text: str) -> str:
     if not text:
-        return text
-    return (text
-        .replace("\\", "\\\\")
-        .replace("*", "\\*")
-        .replace("_", "\\_")
-        .replace("`", "\\`")
-        .replace("[", "\\[")
-        .replace("]", "\\]")
-        .replace("~", "\\~")
-        .replace("|", "\\|")
-        .replace(">", "\\>")
-        .replace("#", "\\#")
-        .replace("-", "\\-")
-        .replace("+", "\\+")
-        .replace("=", "\\=")
-        .replace("{", "\\{")
-        .replace("}", "\\}")
-        .replace(".", "\\.")
-        .replace("!", "\\!"))
+        return ""
+    # Escape all MarkdownV2 special chars
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', str(text))
 
-def format_border(text: str, border_char: str = "★", title: str = "WELCOME") -> str:
-    """Create beautiful bordered message like Rose bot"""
-    lines = text.split('\n')
-    max_len = max(len(re.sub(r'\*.*?\*', '', line)) for line in lines) + 4
-    border = border_char * min(max_len, 40)
-    
-    result = f"┌{border}┐\n"
-    result += f"│  ✨ {title} ✨  │\n"
-    result += f"├{border}┤\n"
-    for line in lines:
-        padding = (max_len - len(re.sub(r'\*.*?\*', '', line))) // 2
-        result += f"│{' ' * padding}{line}{' ' * padding}│\n"
-    result += f"└{border}┘"
-    return result
 
-# ============= REDIS + JSON STORAGE =============
+# ============================================================
+#  STORAGE  (Redis primary, JSON fallback)
+# ============================================================
 _redis_conn = None
-_json_lock = asyncio.Lock()
+_json_lock  = asyncio.Lock()
 
 async def _get_redis():
     global _redis_conn
@@ -103,993 +80,1309 @@ async def _get_redis():
     return _redis_conn if _redis_conn else None
 
 def _load_json() -> dict:
-    path = Path(SETTINGS_FILE)
-    if path.exists():
+    p = Path(SETTINGS_FILE)
+    if p.exists():
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return json.loads(p.read_text("utf-8"))
         except Exception:
             pass
     return {}
 
 async def _save_json(data: dict):
     async with _json_lock:
-        path = Path(SETTINGS_FILE)
+        p   = Path(SETTINGS_FILE)
+        tmp = p.with_suffix(".tmp")
         try:
-            tmp = path.with_suffix(".json.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            tmp.replace(path)
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+            tmp.replace(p)
         except OSError as e:
             logger.error(f"JSON save error: {e}")
 
-async def get_group_settings(group_id: int) -> dict:
-    gid = str(group_id)
-    r = await _get_redis()
+async def get_settings(gid: int) -> dict:
+    key = f"wb:{gid}"
+    r   = await _get_redis()
     if r:
         try:
-            raw = await r.get(f"wb:{gid}")
+            raw = await r.get(key)
             if raw:
                 return json.loads(raw)
         except Exception:
             pass
-    return _load_json().get(gid, {})
+    return _load_json().get(str(gid), {})
 
-async def set_group_key(group_id: int, key: str, value):
-    gid = str(group_id)
-    r = await _get_redis()
-    settings = {}
+async def save_settings(gid: int, settings: dict):
+    key = f"wb:{gid}"
+    js  = json.dumps(settings, ensure_ascii=False)
+    r   = await _get_redis()
     if r:
         try:
-            raw = await r.get(f"wb:{gid}")
-            if raw:
-                settings = json.loads(raw)
+            await r.set(key, js)
         except Exception:
             pass
-    if not settings:
-        settings = _load_json().get(gid, {})
+    all_s         = _load_json()
+    all_s[str(gid)] = settings
+    await _save_json(all_s)
+    logger.info(f"[{gid}] Settings saved ✅")
 
-    settings[key] = value
-    js = json.dumps(settings, ensure_ascii=False)
+async def set_key(gid: int, key: str, value):
+    s       = await get_settings(gid)
+    s[key]  = value
+    await save_settings(gid, s)
 
+async def delete_all(gid: int):
+    r = await _get_redis()
     if r:
         try:
-            await r.set(f"wb:{gid}", js)
+            await r.delete(f"wb:{gid}")
         except Exception:
             pass
     all_s = _load_json()
-    all_s[gid] = settings
+    all_s.pop(str(gid), None)
     await _save_json(all_s)
-    logger.info(f"[{gid}] Saved {key}")
-
-async def delete_group_key(group_id: int, key: str = None):
-    gid = str(group_id)
-    r = await _get_redis()
-
-    if key:
-        s = await get_group_settings(group_id)
-        s.pop(key, None)
-        if not s:
-            if r:
-                try: await r.delete(f"wb:{gid}")
-                except: pass
-            all_s = _load_json()
-            all_s.pop(gid, None)
-            await _save_json(all_s)
-        else:
-            js = json.dumps(s, ensure_ascii=False)
-            if r:
-                try: await r.set(f"wb:{gid}", js)
-                except: pass
-            all_s = _load_json()
-            all_s[gid] = s
-            await _save_json(all_s)
-    else:
-        if r:
-            try: await r.delete(f"wb:{gid}")
-            except: pass
-        all_s = _load_json()
-        all_s.pop(gid, None)
-        await _save_json(all_s)
 
 
-# ============= GENDER CACHE =============
-_gender_cache: Dict[int, Dict] = {}
+# ============================================================
+#  GENDER CACHE
+# ============================================================
+_gcache: Dict[int, dict] = {}
 
-async def cache_gender(user_id: int, gender: str, confidence: float):
-    _gender_cache[user_id] = {
-        "gender": gender,
-        "confidence": confidence,
-        "timestamp": asyncio.get_event_loop().time()
-    }
+async def cache_gender(uid: int, gender: str, conf: float):
+    _gcache[uid] = {"gender": gender, "confidence": conf}
     r = await _get_redis()
     if r:
         try:
-            await r.setex(f"gender:{user_id}", 86400 * 30, json.dumps({
-                "gender": gender, "confidence": confidence
-            }))
-        except:
+            await r.setex(f"gender:{uid}", 86400 * 30,
+                          json.dumps({"gender": gender, "confidence": conf}))
+        except Exception:
             pass
 
-async def get_cached_gender(user_id: int) -> Optional[Tuple[str, float]]:
-    if user_id in _gender_cache:
-        cached = _gender_cache[user_id]
-        return (cached["gender"], cached["confidence"])
+async def get_cached_gender(uid: int) -> Optional[Tuple[str, float]]:
+    if uid in _gcache:
+        return (_gcache[uid]["gender"], _gcache[uid]["confidence"])
     r = await _get_redis()
     if r:
         try:
-            data = await r.get(f"gender:{user_id}")
-            if data:
-                d = json.loads(data)
+            raw = await r.get(f"gender:{uid}")
+            if raw:
+                d = json.loads(raw)
                 return (d["gender"], d["confidence"])
-        except:
+        except Exception:
             pass
     return None
 
 
-# ============= GENDER DETECTION =============
-async def detect_gender_groq(first_name: str, last_name: str = "", username: str = "") -> Optional[Tuple[str, float]]:
+# ============================================================
+#  GENDER DETECTION  (Groq AI → Name DB → Ask)
+# ============================================================
+
+async def detect_via_groq(first: str, last: str = "", username: str = "") -> Optional[Tuple[str, float]]:
+    """Groq llama3-70b se gender detect karo — perfect accuracy."""
     if not GROQ_API_KEY:
         return None
-    
-    prompt = f"""Based on the name, determine the likely gender.
-Return ONLY: "male" or "female".
-Only answer if confidence > 80%.
 
-Name: {first_name} {last_name}
-Username: {username}
+    # Strict prompt — sirf male/female/unknown return kare
+    prompt = f"""You are a gender detection system.
+Your ONLY job: given a person's name, return exactly one word — either "male" or "female" or "unknown".
 
-Gender:"""
+Rules:
+- If you are 80%+ confident → return "male" or "female"
+- If you are not sure → return "unknown"
+- Return ONLY the single word. No punctuation, no explanation.
+
+First name: {first}
+Last name: {last}
+Username (hint): {username}
+
+Answer:"""
 
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": "llama3-70b-8192",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 10
+        async with aiohttp.ClientSession() as s:
+            headers = {
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type":  "application/json",
             }
-            
-            async with session.post(
+            payload = {
+                "model":       "llama3-70b-8192",
+                "messages":    [{"role": "user", "content": prompt}],
+                "temperature": 0.0,   # deterministic
+                "max_tokens":  5,
+            }
+            async with s.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+                headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
                 if resp.status == 200:
-                    result = await resp.json()
-                    gender = result["choices"][0]["message"]["content"].strip().lower()
-                    if gender in ["male", "female"]:
-                        logger.info(f"GROQ detected: {gender} for {first_name}")
-                        return (gender, 0.95)
+                    data   = await resp.json()
+                    answer = data["choices"][0]["message"]["content"].strip().lower()
+                    # Clean any extra punctuation just in case
+                    answer = re.sub(r'[^a-z]', '', answer)
+                    if answer in ("male", "female"):
+                        logger.info(f"🤖 Groq → {answer} for '{first} {last}'")
+                        return (answer, 0.95)
+                    elif answer == "unknown":
+                        return None
+                else:
+                    body = await resp.text()
+                    logger.error(f"Groq HTTP {resp.status}: {body[:200]}")
+    except asyncio.TimeoutError:
+        logger.warning("Groq timeout")
     except Exception as e:
-        logger.error(f"GROQ API error: {e}")
+        logger.error(f"Groq error: {e}")
     return None
 
-# Name database
-MALE_NAMES = {"aarav","aditya","akash","amit","ankit","arjun","aryan","ayush","deepak","dev","dhruv","gaurav","harsh","kartik","karan","kunal","manish","mohit","nikhil","rahul","raj","rajesh","ravi","rohit","rohan","sachin","sahil","shubham","sumit","suraj","varun","vikas","vivek","yash","james","john","robert","michael","william","david","richard","thomas","charles","christopher","daniel","matthew","anthony","mark","liam","noah","oliver","elijah","lucas","mason","ali","muhammad","omar","hassan","ibrahim","ahmed"}
-FEMALE_NAMES = {"aisha","ananya","anjali","ankita","anushka","arpita","deepika","divya","garima","ishita","kajal","kavya","khushi","komal","kritika","mansi","megha","meera","muskan","namrata","neha","nikita","nisha","pallavi","pooja","priya","riya","sakshi","sandhya","shruti","simran","sneha","sonam","tanvi","tanya","vidya","zara","diya","sarah","emily","emma","olivia","ava","sophia","isabella","mia","amelia","harper","evelyn","abigail","elizabeth","sofia","ella","grace","chloe","fatima","maryam","amina","hana","sara","leila","yasmin","noor"}
+# Comprehensive name databases
+MALE_NAMES = {
+    # Indian
+    "aarav","aditya","akash","amit","ankit","arjun","aryan","ayush","deepak","dev",
+    "dhruv","gaurav","harsh","kartik","karan","kunal","manish","mohit","nikhil",
+    "rahul","raj","rajesh","ravi","rohit","rohan","sachin","sahil","shubham","sumit",
+    "suraj","varun","vikas","vivek","yash","siddharth","vishal","abhishek","ajay",
+    "akshay","amitabh","anurag","ashish","ashok","bhavesh","chirag","dinesh","girish",
+    "gopal","harish","hemant","hitesh","jagdish","jayesh","jignesh","kapil","krishna",
+    "lalit","mahesh","manoj","mukesh","nagesh","neeraj","niraj","pankaj","paresh",
+    "prakash","prasad","prashant","rajiv","ramesh","rupesh","sanjeev","santosh",
+    "satish","shailesh","sharad","shyam","suresh","tushar","umesh","vinod","viral",
+    # English/Western
+    "james","john","robert","michael","william","david","richard","thomas","charles",
+    "christopher","daniel","matthew","anthony","mark","liam","noah","oliver","elijah",
+    "lucas","mason","logan","ethan","aiden","ryan","jacob","tyler","jack","jayden",
+    "leo","henry","owen","sebastian","finn","caleb","joshua","nathan","adam","alex",
+    # Arabic/Muslim
+    "ali","muhammad","omar","hassan","ibrahim","ahmed","khalid","tariq","yusuf",
+    "bilal","hamza","usman","zaid","faisal","nawaz","imran","salman","shahid",
+    # Other
+    "viktor","ivan","nikolai","boris","dmitri","andrei","sergei","alexei",
+}
 
-async def detect_gender_name(name: str) -> Optional[Tuple[str, float]]:
-    if not name:
+FEMALE_NAMES = {
+    # Indian
+    "aisha","ananya","anjali","ankita","anushka","arpita","deepika","divya","garima",
+    "ishita","kajal","kavya","khushi","komal","kritika","mansi","megha","meera",
+    "muskan","namrata","neha","nikita","nisha","pallavi","pooja","priya","riya",
+    "sakshi","sandhya","shruti","simran","sneha","sonam","tanvi","tanya","vidya",
+    "zara","diya","prachi","swati","madhuri","sunita","savita","babita","shilpa",
+    "preeti","aarti","sonia","rekha","seema","reena","sheetal","kavita","lalita",
+    "archana","usha","geeta","lata","manju","pushpa","radha","sita","durga",
+    "kiran","anita","nidhi","shweta","monika","poonam","rachna","sudha","uma",
+    "vani","yamini","bharti","chanda","kamla","leela","nandita","padma","rani",
+    # English/Western
+    "sarah","emily","emma","olivia","ava","sophia","isabella","mia","amelia",
+    "harper","evelyn","abigail","elizabeth","sofia","ella","grace","chloe","lily",
+    "hannah","natalie","samantha","jessica","ashley","brianna","taylor","madison",
+    "victoria","scarlett","aurora","hazel","violet","ellie","stella","lucy",
+    # Arabic/Muslim
+    "fatima","maryam","amina","hana","sara","leila","yasmin","noor","aisha",
+    "khadija","zainab","ruqayyah","sumaiya","asma","hafsa","safiya","umm",
+    # Other
+    "maria","elena","anna","irina","natasha","olga","tatyana","yulia",
+}
+
+async def detect_via_namedb(full_name: str) -> Optional[Tuple[str, float]]:
+    """Name database se detect karo."""
+    if not full_name:
         return None
-    clean = re.sub(r"[^a-zA-Z]", "", name).lower()
-    if len(clean) < 2:
-        return None
-    if clean in MALE_NAMES:
-        return ("male", 0.85)
-    if clean in FEMALE_NAMES:
-        return ("female", 0.85)
+    # Check each word in the name
+    for part in full_name.lower().split():
+        clean = re.sub(r'[^a-z]', '', part)
+        if len(clean) < 2:
+            continue
+        if clean in MALE_NAMES:
+            return ("male", 0.82)
+        if clean in FEMALE_NAMES:
+            return ("female", 0.82)
     return None
 
-async def detect_gender_master(user_id: int, first_name: str, last_name: str = "", username: str = "") -> Tuple[str, float, str]:
-    cached = await get_cached_gender(user_id)
+async def detect_gender(uid: int, first: str, last: str = "", username: str = "") -> Tuple[str, float, str]:
+    """
+    Master gender detection pipeline:
+    Cache → Groq AI → Name DB → Ask User
+    Returns: (gender, confidence, method)
+    """
+    # 1. Cache check
+    cached = await get_cached_gender(uid)
     if cached:
+        logger.info(f"💾 Cache hit: {cached[0]} for uid={uid}")
         return (cached[0], cached[1], "cache")
-    
-    result = await detect_gender_groq(first_name, last_name, username)
+
+    # 2. Groq AI (best accuracy)
+    result = await detect_via_groq(first, last, username)
     if result:
-        gender, confidence = result
-        await cache_gender(user_id, gender, confidence)
-        return (gender, confidence, "groq_ai")
-    
-    result = await detect_gender_name(f"{first_name} {last_name}")
+        await cache_gender(uid, result[0], result[1])
+        return (result[0], result[1], "groq_ai")
+
+    # 3. Name database fallback
+    full = f"{first} {last}".strip()
+    result = await detect_via_namedb(full)
     if result:
-        gender, confidence = result
-        await cache_gender(user_id, gender, confidence)
-        return (gender, confidence, "name_database")
-    
+        await cache_gender(uid, result[0], result[1])
+        return (result[0], result[1], "name_db")
+
+    # 4. Unknown → bot will ask user
     return ("unknown", 0.0, "none")
 
 
-# ============= PROFESSIONAL TEMPLATES (ROSE BOT STYLE) =============
-PROFESSIONAL_TEMPLATES = {
+# ============================================================
+#  TEMPLATES  (gender-split)
+# ============================================================
+TEMPLATES = {
     "default": {
-        "male": "🌟 *Welcome to {group}, {name}!* 🌟\n\n"
-                "┌─────────────────────┐\n"
-                "│ 👤 Name: {name}      │\n"
-                "│ 🆔 Username: {username} │\n"
-                "│ 📅 Joined: {date}    │\n"
-                "└─────────────────────┘\n\n"
-                "✨ *About our community:*\n"
-                "• {member_count}+ Active Members\n"
-                "• Daily Discussions\n"
-                "• Helpful Environment\n\n"
-                "💫 *Make sure to read rules!*",
-        "female": "🌟 *Welcome to {group}, {name}!* 🌟\n\n"
-                  "┌─────────────────────┐\n"
-                  "│ 👤 Name: {name}      │\n"
-                  "│ 🆔 Username: {username} │\n"
-                  "│ 📅 Joined: {date}    │\n"
-                  "└─────────────────────┘\n\n"
-                  "✨ *About our community:*\n"
-                  "• {member_count}+ Active Members\n"
-                  "• Daily Discussions\n"
-                  "• Helpful Environment\n\n"
-                  "💫 *Make sure to read rules!*"
+        "male": (
+            "🌟 *Welcome to {group}, {name}\\!*\n\n"
+            "┌──────────────────────┐\n"
+            "│ 👤 {name}\n"
+            "│ 🆔 {username}\n"
+            "│ 📅 {date} │ ⏰ {time}\n"
+            "│ 👥 Member \\#{member_count}\n"
+            "└──────────────────────┘\n\n"
+            "💪 *Bro, welcome aboard\\!*\n"
+            "Rules padh lo aur enjoy karo 🔥"
+        ),
+        "female": (
+            "🌸 *Welcome to {group}, {name}\\!*\n\n"
+            "┌──────────────────────┐\n"
+            "│ 👤 {name}\n"
+            "│ 🆔 {username}\n"
+            "│ 📅 {date} │ ⏰ {time}\n"
+            "│ 👥 Member \\#{member_count}\n"
+            "└──────────────────────┘\n\n"
+            "💐 *Aapka swagat hai\\!*\n"
+            "Rules padh lo aur enjoy karo ✨"
+        ),
     },
     "elegant": {
-        "male": "✧══════════════════════════✧\n"
-                "         💎 *WELCOME* 💎\n"
-                "✧══════════════════════════✧\n\n"
-                "     *{name}* has joined!\n"
-                "     ✨ @{username} ✨\n\n"
-                "『 {group} 』\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📊 Members: {member_count}\n"
-                "🎯 Type: Premium Community\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🌸 *Enjoy your stay!* 🌸",
-        "female": "✧══════════════════════════✧\n"
-                  "         💎 *WELCOME* 💎\n"
-                  "✧══════════════════════════✧\n\n"
-                  "     *{name}* has joined!\n"
-                  "     ✨ @{username} ✨\n\n"
-                  "『 {group} 』\n"
-                  "━━━━━━━━━━━━━━━━━━━━━━\n"
-                  "📊 Members: {member_count}\n"
-                  "🎯 Type: Premium Community\n"
-                  "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                  "🌸 *Enjoy your stay!* 🌸"
+        "male": (
+            "✧══════════════════════════✧\n"
+            "        💎 *WELCOME BRO* 💎\n"
+            "✧══════════════════════════✧\n\n"
+            "👦 *{name}* has joined\\!\n"
+            "    {username}\n\n"
+            "『 {group} 』\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 Members: {member_count}\n"
+            "🤖 Detected: {detect_method}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚀 *Enjoy your stay, bhai\\!*"
+        ),
+        "female": (
+            "✧══════════════════════════✧\n"
+            "        👑 *WELCOME* 👑\n"
+            "✧══════════════════════════✧\n\n"
+            "👧 *{name}* has joined\\!\n"
+            "    {username}\n\n"
+            "『 {group} 』\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 Members: {member_count}\n"
+            "🤖 Detected: {detect_method}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "💐 *Enjoy your stay\\!*"
+        ),
     },
     "premium": {
-        "male": "🏆 ━━━━━━━━━━━━━━━━━━━━ 🏆\n"
-                "         ✨ *PREMIUM WELCOME* ✨\n"
-                "🏆 ━━━━━━━━━━━━━━━━━━━━ 🏆\n\n"
-                "👑 *{name}* 👑\n"
-                "┣━ 📝 Username: {username}\n"
-                "┣━ 🏠 Group: {group}\n"
-                "┣━ 👥 Members: {member_count}\n"
-                "┗━ ⭐ Status: {gender_emoji} Verified\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🎉 *We're excited to have you!* 🎉",
-        "female": "🏆 ━━━━━━━━━━━━━━━━━━━━ 🏆\n"
-                  "         ✨ *PREMIUM WELCOME* ✨\n"
-                  "🏆 ━━━━━━━━━━━━━━━━━━━━ 🏆\n\n"
-                  "👑 *{name}* 👑\n"
-                  "┣━ 📝 Username: {username}\n"
-                  "┣━ 🏠 Group: {group}\n"
-                  "┣━ 👥 Members: {member_count}\n"
-                  "┗━ ⭐ Status: {gender_emoji} Verified\n\n"
-                  "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                  "🎉 *We're excited to have you!* 🎉"
+        "male": (
+            "🏆 ━━━━━━━━━━━━━━━━━━━━━━ 🏆\n"
+            "      ✨ *PREMIUM WELCOME* ✨\n"
+            "🏆 ━━━━━━━━━━━━━━━━━━━━━━ 🏆\n\n"
+            "👑 *{name}* 👑\n"
+            "┣━ 📝 {username}\n"
+            "┣━ 🏠 {group}\n"
+            "┣━ 👥 {member_count} members\n"
+            "┗━ ⭐ Status: 👦 Male • Verified\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔥 *Bhai, we're excited to have you\\!*"
+        ),
+        "female": (
+            "🏆 ━━━━━━━━━━━━━━━━━━━━━━ 🏆\n"
+            "      ✨ *PREMIUM WELCOME* ✨\n"
+            "🏆 ━━━━━━━━━━━━━━━━━━━━━━ 🏆\n\n"
+            "👸 *{name}* 👸\n"
+            "┣━ 📝 {username}\n"
+            "┣━ 🏠 {group}\n"
+            "┣━ 👥 {member_count} members\n"
+            "┗━ ⭐ Status: 👧 Female • Verified\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🌺 *We're excited to have you\\!*"
+        ),
     },
     "minimal": {
-        "male": "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
-                "      ✦ {name} ✦\n"
-                "         joined\n"
-                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n\n"
-                "┌ @{username} ┐\n"
-                "│ {group} │\n"
-                "└ {member_count} members ┘",
-        "female": "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
-                  "      ✦ {name} ✦\n"
-                  "         joined\n"
-                  "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n\n"
-                  "┌ @{username} ┐\n"
-                  "│ {group} │\n"
-                  "└ {member_count} members ┘"
-    }
+        "male": (
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            "  👦 *{name}* joined\\!\n"
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n\n"
+            "{username} │ {group} │ {member_count} members"
+        ),
+        "female": (
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            "  👧 *{name}* joined\\!\n"
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n\n"
+            "{username} │ {group} │ {member_count} members"
+        ),
+    },
 }
 
-# ============= MESSAGE RENDERER =============
-async def render_welcome_message(template: str, user, group_name: str, group_id: int, member_count: int, gender: str) -> str:
+METHOD_BADGE = {
+    "groq_ai":  "🤖 Groq AI",
+    "name_db":  "📚 Name DB",
+    "cache":    "💾 Cached",
+    "user_selected": "✅ Self Selected",
+}
+
+async def render(template: str, user, group_name: str, gid: int,
+                 member_count: int, gender: str, method: str) -> str:
     now = datetime.now()
-    
-    replacements = {
-        "{name}": esc(user.full_name or user.first_name or "Member"),
-        "{first_name}": esc(user.first_name or ""),
-        "{last_name}": esc(user.last_name or ""),
-        "{username}": esc(f"@{user.username}" if user.username else user.first_name or "member"),
-        "{mention}": f"[{esc(user.first_name or 'User')}](tg://user?id={user.id})",
-        "{group}": esc(group_name),
-        "{group_id}": str(group_id),
-        "{member_count}": str(member_count),
-        "{date}": now.strftime("%d/%m/%Y"),
-        "{time}": now.strftime("%H:%M:%S"),
-        "{gender_emoji}": "👦" if gender == "male" else "👧",
-        "{random_emoji}": ["🎉", "✨", "🌟", "💫", "🚀", "💪", "🔥", "⭐"][now.second % 8],
+    repl = {
+        "{name}":          esc(user.full_name or user.first_name or "Member"),
+        "{first_name}":    esc(user.first_name or ""),
+        "{last_name}":     esc(user.last_name  or ""),
+        "{username}":      esc(f"@{user.username}" if user.username else (user.first_name or "member")),
+        "{mention}":       f"[{esc(user.first_name or 'User')}](tg://user?id={user.id})",
+        "{group}":         esc(group_name),
+        "{group_id}":      str(gid),
+        "{member_count}":  str(member_count),
+        "{date}":          esc(now.strftime("%d/%m/%Y")),
+        "{time}":          esc(now.strftime("%H:%M")),
+        "{gender_emoji}":  "👦" if gender == "male" else "👧",
+        "{detect_method}": esc(METHOD_BADGE.get(method, method)),
     }
-    
     result = template
-    for key, value in replacements.items():
-        result = result.replace(key, value)
-    
+    for k, v in repl.items():
+        result = result.replace(k, v)
     return result
 
-async def is_admin(update, context, group_id=None) -> bool:
+
+# ============================================================
+#  UTILS
+# ============================================================
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                   gid: int = None) -> bool:
     uid = update.effective_user.id
-    cid = group_id or update.effective_chat.id
+    cid = gid or update.effective_chat.id
     try:
         m = await context.bot.get_chat_member(cid, uid)
         return m.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except TelegramError:
         return False
 
-async def safe_send(context, chat_id, text, reply_markup=None, parse_mode=ParseMode.MARKDOWN):
+async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
+                    reply_markup=None, pm=ParseMode.MARKDOWN_V2):
     try:
-        await context.bot.send_message(
+        return await context.bot.send_message(
             chat_id=chat_id, text=text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True
+            parse_mode=pm, reply_markup=reply_markup,
+            disable_web_page_preview=True,
         )
     except TelegramError as e:
-        clean = re.sub(r'[*_`\[\]()~>#+=|{}.!-]', '', text)
+        logger.warning(f"MDv2 failed ({e}), fallback plain")
+        clean = re.sub(r'[_*\[\]()~`>#+\-=|{}.!\\]', '', text)
         try:
-            await context.bot.send_message(chat_id=chat_id, text=clean, reply_markup=reply_markup)
-        except:
-            pass
+            return await context.bot.send_message(
+                chat_id=chat_id, text=clean, reply_markup=reply_markup
+            )
+        except TelegramError as e2:
+            logger.error(f"Plain send failed too: {e2}")
+    return None
+
+def get_gid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type == "private":
+        return (context.user_data.get("active_group_id"),
+                context.user_data.get("active_group_name", "Group"))
+    return (chat.id, chat.title or "Group")
+
+def build_markup(buttons_raw) -> Optional[InlineKeyboardMarkup]:
+    if not buttons_raw:
+        return None
+    try:
+        data = json.loads(buttons_raw) if isinstance(buttons_raw, str) else buttons_raw
+        kb   = []
+        for row in data:
+            kr = []
+            for btn in row:
+                if btn[1] == "url":
+                    kr.append(InlineKeyboardButton(btn[0], url=btn[2]))
+                elif btn[1] == "callback":
+                    kr.append(InlineKeyboardButton(btn[0], callback_data=btn[2]))
+            if kr:
+                kb.append(kr)
+        return InlineKeyboardMarkup(kb) if kb else None
+    except Exception:
+        return None
 
 
-# ============= COMMAND HANDLERS =============
+# ============================================================
+#  CORE: SEND WELCOME
+# ============================================================
+async def send_welcome(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                       user, gender: str, group_name: str, method: str):
+    """
+    Gender ke hisaab se:
+    - Custom msg (male_msg / female_msg) ya template
+    - Multiple videos list se random pick
+    - Buttons attach
+    """
+    s = await get_settings(chat_id)
+
+    # ── 1. Message text ──────────────────────────────────────
+    if gender == "male":
+        custom_msg = s.get("male_msg", "")
+    else:
+        custom_msg = s.get("female_msg", "")
+
+    if not custom_msg:
+        # fallback: shared custom or template
+        custom_msg = s.get("custom_msg", "")
+
+    if not custom_msg:
+        tpl_name = s.get("template", "default")
+        tpl      = TEMPLATES.get(tpl_name, TEMPLATES["default"])
+        custom_msg = tpl.get(gender, tpl["male"])   # male fallback if needed
+
+    # ── 2. Member count ───────────────────────────────────────
+    try:
+        member_count = await context.bot.get_chat_member_count(chat_id)
+    except Exception:
+        member_count = 0
+
+    final_text = await render(custom_msg, user, group_name, chat_id,
+                               member_count, gender, method)
+
+    # ── 3. Buttons ────────────────────────────────────────────
+    markup = build_markup(s.get("buttons"))
+
+    # ── 4. Videos / photos ───────────────────────────────────
+    # Per-gender video list  →  random pick
+    if gender == "male":
+        media_list  = s.get("male_videos",  [])   # list of {id, type}
+        media_list += s.get("male_photos",  [])
+    else:
+        media_list  = s.get("female_videos", [])
+        media_list += s.get("female_photos", [])
+
+    # Fallback: shared media
+    if not media_list:
+        media_list = s.get("shared_media", [])
+
+    chosen = random.choice(media_list) if media_list else None
+
+    # ── 5. Send ───────────────────────────────────────────────
+    sent = False
+    if chosen:
+        mid   = chosen["id"]
+        mtype = chosen["type"]
+        try:
+            if mtype == "video":
+                await context.bot.send_video(
+                    chat_id=chat_id, video=mid,
+                    caption=final_text, parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=markup
+                )
+                sent = True
+            elif mtype == "photo":
+                await context.bot.send_photo(
+                    chat_id=chat_id, photo=mid,
+                    caption=final_text, parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=markup
+                )
+                sent = True
+            elif mtype == "gif":
+                await context.bot.send_animation(
+                    chat_id=chat_id, animation=mid,
+                    caption=final_text, parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=markup
+                )
+                sent = True
+        except TelegramError as e:
+            logger.error(f"Media send failed: {e}")
+
+    if not sent:
+        await safe_send(context, chat_id, final_text, reply_markup=markup)
+
+    logger.info(f"✅ Welcome sent → {user.full_name} ({gender}) in {chat_id}")
+
+
+# ============================================================
+#  COMMANDS
+# ============================================================
+
+# ── /start ─────────────────────────────────────────────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    n = esc(u.first_name or "Dost")
-    
+    u  = update.effective_user
+    n  = esc(u.first_name or "Dost")
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📚 Templates", callback_data="show_templates")],
-        [InlineKeyboardButton("📖 Guide", callback_data="help_premium"),
-         InlineKeyboardButton("⚙️ Setup", callback_data="setup_guide")]
+        [InlineKeyboardButton("📚 Templates",   callback_data="show_templates")],
+        [InlineKeyboardButton("📖 Guide",        callback_data="help_guide"),
+         InlineKeyboardButton("⚙️ Setup",        callback_data="setup_guide")],
     ])
-    
     await safe_send(context, update.effective_chat.id,
-        f"┌─────────────────────┐\n"
-        f"│  🌹 *WELCOME BOT*  │\n"
-        f"│                     │\n"
-        f"└─────────────────────┘\n\n"
-        f"✨ *Namaste, {n}!* ✨\n\n"
+        f"┌──────────────────────┐\n"
+        f"│   🌹 *WELCOME BOT*   │\n"
+        f"└──────────────────────┘\n\n"
+        f"✨ *Namaste, {n}\\!* ✨\n\n"
         f"*Features:*\n"
-        f"┣━ 🎨 Premium Templates\n"
-        f"┣━ 📹 Media Support\n"
+        f"┣━ 🎨 4 Premium Templates\n"
+        f"┣━ 📹 Multiple Videos per Gender\n"
         f"┣━ 🔘 Inline Buttons\n"
-        f"┗━ ⚡ Fast & Reliable\n\n"
         f"*Commands:*\n"
-        f"┏━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ /connect - Connect Group\n"
-        f"┃ /template - Set Template\n"
-        f"┃ /setvideo+msg-male\n"
-        f"┃ /setvideo+msg-female\n"
-        f"┃ /setbuttons - Add Buttons\n"
-        f"┃ /preview - Test Message\n"
-        f"┃ /settings - View Settings\n"
-        f"┗━━━━━━━━━━━━━━━━━━━┛\n\n"
-        f"💡 *Tip:* Use /template to start!",
-        reply_markup=kb
+        f"┏━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃ /connect \\- Group connect karo\n"
+        f"┃ /template \\- Template chuno\n"
+        f"┃ /add \\- Male video+MSG add\n"
+        f"┃ /add \\- Female video add\n"
+        f"┃ /listmedia \\- Saved media dekho\n"
+        f"┃ /clearmedia \\- Media clear karo\n"
+        f"┃ /setmore \\- or video+msg set karo\n"
+        f"┃ /preview \\- Test karo\n"
+        f"┃ /settings \\- Current settings\n"
+        f"┃ /delete \\- Sab delete karo\n"
+        f"┗━━━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+        f"💡 *Start with:* /connect → /template → /addvideo\\_male",
+        reply_markup=kb,
     )
 
+
+# ── /connect ───────────────────────────────────────────────
 async def connect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type == "private":
         gid = context.user_data.get("active_group_id")
-        gn = esc(context.user_data.get("active_group_name", "—"))
+        gn  = esc(context.user_data.get("active_group_name", "—"))
         if gid:
             txt = f"✅ *Connected:* {gn}\n📁 ID: `{gid}`"
         else:
-            txt = "⚠️ No group connected.\n_Run /connect in your group first._"
-        await safe_send(context, chat.id, f"🔗 *Status*\n\n{txt}")
-        return
-    
+            txt = "⚠️ Koi group connect nahi hai\\.\nPehle group mein /connect chalaao\\."
+        return await safe_send(context, chat.id, f"🔗 *Connection Status*\n\n{txt}")
+
     if not await is_admin(update, context):
-        return await update.message.reply_text("❌ Admin only!")
-    
-    context.user_data["active_group_id"] = chat.id
+        return await update.message.reply_text("❌ Sirf admins use kar sakte hain!")
+
+    context.user_data["active_group_id"]   = chat.id
     context.user_data["active_group_name"] = chat.title
     me = await context.bot.get_me()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Open DM", url=f"https://t.me/{me.username}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 DM mein Open karo", url=f"https://t.me/{me.username}")]])
     await safe_send(context, chat.id,
-        f"✅ *{esc(chat.title)}* connected!\n📁 ID: `{chat.id}`\n\nConfigure in DM 👆",
-        reply_markup=kb
+        f"✅ *{esc(chat.title)}* connected\\!\n📁 ID: `{chat.id}`\n\nDM mein configure karo 👆",
+        reply_markup=kb,
     )
 
+
+# ── /template ──────────────────────────────────────────────
 async def template_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set professional template"""
     chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid = chat.id
-    
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle group mein /connect chalaao\\!")
+
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌟 Default", callback_data=f"template_default_{gid}"),
-         InlineKeyboardButton("💎 Elegant", callback_data=f"template_elegant_{gid}")],
-        [InlineKeyboardButton("🏆 Premium", callback_data=f"template_premium_{gid}"),
-         InlineKeyboardButton("🎯 Minimal", callback_data=f"template_minimal_{gid}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+        [InlineKeyboardButton("🌟 Default", callback_data=f"tpl_default_{gid}"),
+         InlineKeyboardButton("💎 Elegant", callback_data=f"tpl_elegant_{gid}")],
+        [InlineKeyboardButton("🏆 Premium", callback_data=f"tpl_premium_{gid}"),
+         InlineKeyboardButton("🎯 Minimal", callback_data=f"tpl_minimal_{gid}")],
+        [InlineKeyboardButton("❌ Cancel",   callback_data="cancel")],
     ])
-    
     await safe_send(context, chat.id,
-        "┌─────────────────────┐\n"
-        "│  📚 *TEMPLATES*    │\n"
-        "│   Rose Bot Style    │\n"
-        "└─────────────────────┘\n\n"
-        "*Choose a template:*\n\n"
-        "🌟 *Default* - Clean & Professional\n"
-        "💎 *Elegant* - Stylish Design\n"
-        "🏆 *Premium* - Bold & Beautiful\n"
-        "🎯 *Minimal* - Simple & Clean\n\n"
-        "Preview available after selection!",
-        reply_markup=kb
+        "┌──────────────────────┐\n"
+        "│   📚 *TEMPLATES*     │\n"
+        "└──────────────────────┘\n\n"
+        "*Template chuno:*\n\n"
+        "🌟 *Default* \\- Clean \\& Professional\n"
+        "💎 *Elegant* \\- Stylish Design\n"
+        "🏆 *Premium* \\- Bold \\& Beautiful\n"
+        "🎯 *Minimal* \\- Simple \\& Clean\n\n"
+        "Select karo — preview /preview se dekho\\!",
+        reply_markup=kb,
     )
 
+
+# ── /setwelcome (shared) ────────────────────────────────────
 async def setwelcome_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set custom welcome message"""
     chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        gn = context.user_data.get("active_group_name", "Group")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid, gn = chat.id, chat.title
-    
-    msg_text = " ".join(context.args) if context.args else ""
-    
-    if not msg_text and update.message.reply_to_message:
-        msg_text = update.message.reply_to_message.text or update.message.reply_to_message.caption
-    
-    if not msg_text:
-        await safe_send(context, chat.id,
-            f"📝 *Set Welcome Message*\n\n"
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    text = " ".join(context.args) if context.args else ""
+    if not text and update.message.reply_to_message:
+        text = (update.message.reply_to_message.text or
+                update.message.reply_to_message.caption or "")
+
+    if not text:
+        return await safe_send(context, chat.id,
+            f"📝 *Shared Welcome Message*\n\n"
             f"Group: *{esc(gn)}*\n\n"
-            f"*Usage:* `/setwelcome Your message here`\n\n"
+            f"*Usage:* `/setwelcome Apna msg yahan`\n\n"
             f"*Variables:*\n"
-            f"`{{name}}` - User's name\n"
-            f"`{{username}}` - Username\n"
-            f"`{{group}}` - Group name\n"
-            f"`{{member_count}}` - Members count\n"
-            f"`{{date}}` - Current date\n"
-            f"`{{gender_emoji}}` - 👦/👧\n\n"
-            f"*Example:*\n"
-            f"`/setwelcome Welcome {{name}}! 🎉`")
-        return
-    
-    await set_group_key(gid, "custom_welcome_msg", msg_text)
-    await safe_send(context, chat.id, f"✅ *Welcome message saved!*\n\nPreview:\n{msg_text[:200]}")
-
-async def setmedia_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set welcome media (video/photo/GIF)"""
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid = chat.id
-    
-    reply = update.message.reply_to_message
-    if not reply:
-        await safe_send(context, chat.id,
-            "📹 *Set Welcome Media*\n\n"
-            "*Usage:* Reply to a video/photo/GIF with:\n"
-            "`/setmedia`\n\n"
-            "Supported: Video, Photo, Animation (GIF)")
-        return
-    
-    media_id = None
-    media_type = None
-    
-    if reply.video:
-        media_id = reply.video.file_id
-        media_type = "video"
-    elif reply.photo:
-        media_id = reply.photo[-1].file_id
-        media_type = "photo"
-    elif reply.animation:
-        media_id = reply.animation.file_id
-        media_type = "gif"
-    
-    if media_id:
-        await set_group_key(gid, "welcome_media_id", media_id)
-        await set_group_key(gid, "welcome_media_type", media_type)
-        await safe_send(context, chat.id, f"✅ *{media_type.upper()} saved as welcome media!*")
-    else:
-        await safe_send(context, chat.id, "❌ Reply to a video, photo, or GIF!")
-
-async def setbuttons_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set inline buttons for welcome message"""
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid = chat.id
-    
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 Rules", callback_data="show_rules"),
-         InlineKeyboardButton("📢 Channel", url="https://t.me/your_channel")],
-        [InlineKeyboardButton("💬 Support", url="https://t.me/your_support"),
-         InlineKeyboardButton("🎮 Games", callback_data="show_games")]
-    ])
-    
-    await set_group_key(gid, "welcome_buttons", json.dumps([
-        [["📜 Rules", "callback", "show_rules"], ["📢 Channel", "url", "https://t.me/your_channel"]],
-        [["💬 Support", "url", "https://t.me/your_support"], ["🎮 Games", "callback", "show_games"]]
-    ]))
-    
-    await safe_send(context, chat.id,
-        "✅ *Buttons configured!*\n\n"
-        "*Current buttons:*\n"
-        "• Rules (Inline)\n"
-        "• Channel (Link)\n"
-        "• Support (Link)\n"
-        "• Games (Inline)\n\n"
-        "Use /preview to see how it looks!")
-
-async def preview_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Preview welcome message"""
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        gn = context.user_data.get("active_group_name", "Group")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid, gn = chat.id, chat.title
-    
-    settings = await get_group_settings(gid)
-    
-    class DummyUser:
-        def __init__(self):
-            self.full_name = "Test User"
-            self.first_name = "Test"
-            self.last_name = "User"
-            self.username = "testuser"
-            self.id = 123456789
-    
-    dummy_user = DummyUser()
-    member_count = 42
-    
-    # Get template or custom message
-    template_name = settings.get("active_template", "default")
-    custom_msg = settings.get("custom_welcome_msg", "")
-    
-    if custom_msg:
-        male_msg = custom_msg
-        female_msg = custom_msg
-    else:
-        template = PROFESSIONAL_TEMPLATES.get(template_name, PROFESSIONAL_TEMPLATES["default"])
-        male_msg = template.get("male", template["default"])
-        female_msg = template.get("female", template["default"])
-    
-    male_preview = await render_welcome_message(male_msg, dummy_user, gn, gid, member_count, "male")
-    female_preview = await render_welcome_message(female_msg, dummy_user, gn, gid, member_count, "female")
-    
-    # Get buttons
-    buttons_data = settings.get("welcome_buttons")
-    reply_markup = None
-    if buttons_data:
-        try:
-            buttons_json = json.loads(buttons_data) if isinstance(buttons_data, str) else buttons_data
-            keyboard = []
-            for row in buttons_json:
-                keyboard_row = []
-                for btn in row:
-                    if btn[1] == "url":
-                        keyboard_row.append(InlineKeyboardButton(btn[0], url=btn[2]))
-                    elif btn[1] == "callback":
-                        keyboard_row.append(InlineKeyboardButton(btn[0], callback_data=btn[2]))
-                if keyboard_row:
-                    keyboard.append(keyboard_row)
-            if keyboard:
-                reply_markup = InlineKeyboardMarkup(keyboard)
-        except:
-            pass
-    
-    # Send previews
-    await safe_send(context, chat.id,
-        f"┌─────────────────────┐\n"
-        f"│  👦 *MALE PREVIEW*  │\n"
-        f"└─────────────────────┘\n\n"
-        f"{male_preview}",
-        reply_markup=reply_markup
-    )
-    
-    await asyncio.sleep(1)
-    
-    await safe_send(context, chat.id,
-        f"┌─────────────────────┐\n"
-        f"│  👧 *FEMALE PREVIEW* │\n"
-        f"└─────────────────────┘\n\n"
-        f"{female_preview}",
-        reply_markup=reply_markup
-    )
-
-async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show current settings"""
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        gn = context.user_data.get("active_group_name", "Group")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect in your group first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid, gn = chat.id, chat.title
-    
-    s = await get_group_settings(gid)
-    ok = lambda v: "✅" if v else "❌"
-    
-    template_name = s.get("active_template", "default")
-    media_type = s.get("welcome_media_type", "none")
-    has_buttons = "✅" if s.get("welcome_buttons") else "❌"
-    
-    await safe_send(context, chat.id,
-        f"┌─────────────────────┐\n"
-        f"│  ⚙️ *SETTINGS*      │\n"
-        f"│   {esc(gn)}   │\n"
-        f"└─────────────────────┘\n\n"
-        f"*Configuration:*\n"
-        f"┣━ Template: *{template_name.title()}*\n"
-        f"┣━ Media: {media_type.upper()} {ok(s.get('welcome_media_id'))}\n"
-        f"┣━ Custom Msg: {ok(s.get('custom_welcome_msg'))}\n"
-        f"┣━ Buttons: {has_buttons}\n"
-        f"┗━ AI Detection: {'✅ Active' if GROQ_API_KEY else '❌'}\n\n"
-        f"*Commands:*\n"
-        f"/template - Change template\n"
-        f"/setwelcome - Custom message\n"
-        f"/setmedia - Add video/photo\n"
-        f"/setbuttons - Add buttons\n"
-        f"/preview - Test message"
-    )
-
-async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete all settings"""
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        gid = context.user_data.get("active_group_id")
-        if not gid:
-            return await safe_send(context, chat.id, "⚠️ Run /connect first!")
-    else:
-        if not await is_admin(update, context):
-            return await update.message.reply_text("❌ Admin only!")
-        gid = chat.id
-    
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, Delete All", callback_data=f"delete_confirm_{gid}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-    ])
-    
-    await safe_send(context, chat.id,
-        "⚠️ *Delete All Settings?*\n\n"
-        "This will remove:\n"
-        "• Welcome message\n"
-        "• Media\n"
-        "• Buttons\n"
-        "• Template\n\n"
-        "This action cannot be undone!",
-        reply_markup=kb
-    )
-
-
-# ============= WELCOME HANDLER =============
-async def send_welcome(context, chat_id, user, gender, group_name, method):
-    s = await get_group_settings(chat_id)
-    
-    # Get template or custom message
-    template_name = s.get("active_template", "default")
-    custom_msg = s.get("custom_welcome_msg", "")
-    
-    if custom_msg:
-        welcome_text = custom_msg
-    else:
-        template = PROFESSIONAL_TEMPLATES.get(template_name, PROFESSIONAL_TEMPLATES["default"])
-        welcome_text = template.get(gender, template["default"])
-    
-    # Get member count
-    try:
-        member_count = await context.bot.get_chat_member_count(chat_id)
-    except:
-        member_count = 0
-    
-    # Render message
-    final = await render_welcome_message(welcome_text, user, group_name, chat_id, member_count, gender)
-    
-    # Add method badge
-    method_badge = {
-        "groq_ai": "🤖 AI Detected",
-        "name_database": "📚 Database",
-        "cache": "💾 Cached",
-        "user_selected": "✅ Self-selected"
-    }.get(method, "")
-    
-    if method_badge:
-        final += f"\n\n┌─[ {method_badge} ]─┐"
-    
-    # Get buttons
-    buttons_data = s.get("welcome_buttons")
-    reply_markup = None
-    if buttons_data:
-        try:
-            buttons_json = json.loads(buttons_data) if isinstance(buttons_data, str) else buttons_data
-            keyboard = []
-            for row in buttons_json:
-                keyboard_row = []
-                for btn in row:
-                    if btn[1] == "url":
-                        keyboard_row.append(InlineKeyboardButton(btn[0], url=btn[2]))
-                    elif btn[1] == "callback":
-                        keyboard_row.append(InlineKeyboardButton(btn[0], callback_data=btn[2]))
-                if keyboard_row:
-                    keyboard.append(keyboard_row)
-            if keyboard:
-                reply_markup = InlineKeyboardMarkup(keyboard)
-        except:
-            pass
-    
-    # Get media
-    media_id = s.get("welcome_media_id")
-    media_type = s.get("welcome_media_type")
-    
-    # Send with media if available
-    if media_id and media_type == "video":
-        try:
-            await context.bot.send_video(
-                chat_id=chat_id, video=media_id,
-                caption=final, parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-            return
-        except:
-            pass
-    elif media_id and media_type == "photo":
-        try:
-            await context.bot.send_photo(
-                chat_id=chat_id, photo=media_id,
-                caption=final, parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-            return
-        except:
-            pass
-    elif media_id and media_type == "gif":
-        try:
-            await context.bot.send_animation(
-                chat_id=chat_id, animation=media_id,
-                caption=final, parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-            return
-        except:
-            pass
-    
-    # Send text only
-    await safe_send(context, chat_id, final, reply_markup=reply_markup)
-
-async def greet_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    r = update.chat_member
-    old, new = r.old_chat_member.status, r.new_chat_member.status
-    
-    if not (new in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR)
-            and old not in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR)):
-        return
-    
-    user = r.new_chat_member.user
-    chat = update.effective_chat
-    
-    if user.is_bot:
-        return
-    
-    gn = chat.title or "Group"
-    
-    logger.info(f"👤 New member: {user.full_name} in {gn}")
-    
-    # Detect gender
-    gender, confidence, method = await detect_gender_master(
-        user_id=user.id,
-        first_name=user.first_name or "",
-        last_name=user.last_name or "",
-        username=user.username or ""
-    )
-    
-    if gender != "unknown" and confidence > 0.7:
-        await send_welcome(context, chat.id, user, gender, gn, method)
-    else:
-        # Ask user to select
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👦 I'm Male", callback_data=f"gender_male_{user.id}_{chat.id}"),
-            InlineKeyboardButton("👧 I'm Female", callback_data=f"gender_female_{user.id}_{chat.id}"),
-        ]])
-        await safe_send(context, chat.id,
-            f"┌─────────────────────┐\n"
-            f"│  👋 *WELCOME!* 👋   │\n"
-            f"└─────────────────────┘\n\n"
-            f"*{esc(user.first_name or 'User')}*, please select your gender for personalized welcome 👇",
-            reply_markup=kb
+            f"`{{name}}` \\- Full name\n"
+            f"`{{username}}` \\- Username\n"
+            f"`{{group}}` \\- Group name\n"
+            f"`{{member\\_count}}` \\- Members count\n"
+            f"`{{date}}` \\- Date\n"
+            f"`{{time}}` \\- Time\n"
+            f"`{{gender\\_emoji}}` \\- 👦/👧\n"
+            f"`{{detect\\_method}}` \\- AI method\n\n"
+            f"*Note:* Male/female alag karna ho to\n"
+            f"/setwelcome\\_male aur /setwelcome\\_female use karo\\!"
         )
 
-async def gender_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+    await set_key(gid, "custom_msg", text)
+    await safe_send(context, chat.id,
+        f"✅ *Shared welcome msg saved\\!*\n\n"
+        f"Preview:\n_{esc(text[:300])}_"
+    )
+
+
+# ── /setwelcome_male ───────────────────────────────────────
+async def setwelcome_male_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    text = " ".join(context.args) if context.args else ""
+    if not text and update.message.reply_to_message:
+        text = (update.message.reply_to_message.text or
+                update.message.reply_to_message.caption or "")
+
+    if not text:
+        return await safe_send(context, chat.id,
+            "📝 *Male Welcome Message*\n\n"
+            "*Usage:* `/setwelcome_male Bhai welcome\\! 🔥`\n\n"
+            "Yeh message sirf male members ko jayega\\!"
+        )
+
+    await set_key(gid, "male_msg", text)
+    await safe_send(context, chat.id,
+        f"✅ *Male welcome msg saved\\!* 👦\n\n_{esc(text[:300])}_"
+    )
+
+
+# ── /setwelcome_female ─────────────────────────────────────
+async def setwelcome_female_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    text = " ".join(context.args) if context.args else ""
+    if not text and update.message.reply_to_message:
+        text = (update.message.reply_to_message.text or
+                update.message.reply_to_message.caption or "")
+
+    if not text:
+        return await safe_send(context, chat.id,
+            "📝 *Female Welcome Message*\n\n"
+            "*Usage:* `/setwelcome_female Aapka swagat hai\\! 🌸`\n\n"
+            "Yeh message sirf female members ko jayega\\!"
+        )
+
+    await set_key(gid, "female_msg", text)
+    await safe_send(context, chat.id,
+        f"✅ *Female welcome msg saved\\!* 👧\n\n_{esc(text[:300])}_"
+    )
+
+
+# ── /addvideo_male  (multiple videos support) ──────────────
+async def addvideo_male_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    reply = update.message.reply_to_message
+    if not reply:
+        return await safe_send(context, chat.id,
+            "📹 *Male Video Add karo*\n\n"
+            "Kisi video/photo/GIF ko reply karo `/addvideo_male` se\\.\n\n"
+            "Multiple videos add kar sakte ho — "
+            "welcome pe random ek play hoga\\! 🎲"
+        )
+
+    mid, mtype = None, None
+    if reply.video:
+        mid, mtype = reply.video.file_id, "video"
+    elif reply.photo:
+        mid, mtype = reply.photo[-1].file_id, "photo"
+    elif reply.animation:
+        mid, mtype = reply.animation.file_id, "gif"
+
+    if not mid:
+        return await safe_send(context, chat.id, "❌ Video, photo ya GIF reply karo\\!")
+
+    s    = await get_settings(gid)
+    lst  = s.get("male_videos", []) if mtype == "video" else s.get("male_photos", [])
+    key  = "male_videos" if mtype == "video" else "male_photos"
+    lst.append({"id": mid, "type": mtype})
+    await set_key(gid, key, lst)
+
+    total = len(s.get("male_videos", [])) + len(s.get("male_photos", [])) + 1
+    await safe_send(context, chat.id,
+        f"✅ *Male {mtype} saved\\!* 👦\n\n"
+        f"Total male media: *{total}* items\n"
+        f"Welcome pe random ek play hoga 🎲"
+    )
+
+
+# ── /addvideo_female  (multiple videos support) ────────────
+async def addvideo_female_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    reply = update.message.reply_to_message
+    if not reply:
+        return await safe_send(context, chat.id,
+            "📹 *Female Video Add karo*\n\n"
+            "Kisi video/photo/GIF ko reply karo `/addvideo_female` se\\.\n\n"
+            "Multiple videos add kar sakte ho — "
+            "welcome pe random ek play hoga\\! 🎲"
+        )
+
+    mid, mtype = None, None
+    if reply.video:
+        mid, mtype = reply.video.file_id, "video"
+    elif reply.photo:
+        mid, mtype = reply.photo[-1].file_id, "photo"
+    elif reply.animation:
+        mid, mtype = reply.animation.file_id, "gif"
+
+    if not mid:
+        return await safe_send(context, chat.id, "❌ Video, photo ya GIF reply karo\\!")
+
+    s    = await get_settings(gid)
+    key  = "female_videos" if mtype == "video" else "female_photos"
+    lst  = s.get(key, [])
+    lst.append({"id": mid, "type": mtype})
+    await set_key(gid, key, lst)
+
+    total = len(s.get("female_videos", [])) + len(s.get("female_photos", [])) + 1
+    await safe_send(context, chat.id,
+        f"✅ *Female {mtype} saved\\!* 👧\n\n"
+        f"Total female media: *{total}* items\n"
+        f"Welcome pe random ek play hoga 🎲"
+    )
+
+
+# ── /addvideo (shared fallback) ────────────────────────────
+async def addvideo_shared_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    reply = update.message.reply_to_message
+    if not reply:
+        return await safe_send(context, chat.id,
+            "📹 *Shared Video Add karo*\n\n"
+            "Reply karo `/addvideo` se\\.\n"
+            "Yeh dono male \\& female ko jayega jab gender\\_specific na ho\\."
+        )
+
+    mid, mtype = None, None
+    if reply.video:
+        mid, mtype = reply.video.file_id, "video"
+    elif reply.photo:
+        mid, mtype = reply.photo[-1].file_id, "photo"
+    elif reply.animation:
+        mid, mtype = reply.animation.file_id, "gif"
+
+    if not mid:
+        return await safe_send(context, chat.id, "❌ Video, photo ya GIF reply karo\\!")
+
+    s   = await get_settings(gid)
+    lst = s.get("shared_media", [])
+    lst.append({"id": mid, "type": mtype})
+    await set_key(gid, "shared_media", lst)
+
+    await safe_send(context, chat.id,
+        f"✅ *Shared {mtype} saved\\!*\n\n"
+        f"Total shared media: *{len(lst)}* items"
+    )
+
+
+# ── /listmedia ─────────────────────────────────────────────
+async def listmedia_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    s = await get_settings(gid)
+    mv  = s.get("male_videos",   [])
+    mp  = s.get("male_photos",   [])
+    fv  = s.get("female_videos", [])
+    fp  = s.get("female_photos", [])
+    sh  = s.get("shared_media",  [])
+
+    lines = (
+        f"┌──────────────────────┐\n"
+        f"│   📂 *MEDIA LIST*    │\n"
+        f"│   {esc(gn)}\n"
+        f"└──────────────────────┘\n\n"
+        f"👦 *Male Media:*\n"
+        f"┣━ 🎬 Videos: *{len(mv)}*\n"
+        f"┗━ 🖼 Photos/GIF: *{len(mp)}*\n\n"
+        f"👧 *Female Media:*\n"
+        f"┣━ 🎬 Videos: *{len(fv)}*\n"
+        f"┗━ 🖼 Photos/GIF: *{len(fp)}*\n\n"
+        f"🔀 *Shared \\(fallback\\):*\n"
+        f"┗━ 📁 Items: *{len(sh)}*\n\n"
+        f"_/clearmedia male/female/shared se clear karo_"
+    )
+    await safe_send(context, chat.id, lines)
+
+
+# ── /clearmedia ────────────────────────────────────────────
+async def clearmedia_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    which = context.args[0].lower() if context.args else ""
+    if which == "male":
+        await set_key(gid, "male_videos", [])
+        await set_key(gid, "male_photos", [])
+        await safe_send(context, chat.id, "🗑 *Male media cleared\\!* 👦")
+    elif which == "female":
+        await set_key(gid, "female_videos", [])
+        await set_key(gid, "female_photos", [])
+        await safe_send(context, chat.id, "🗑 *Female media cleared\\!* 👧")
+    elif which == "shared":
+        await set_key(gid, "shared_media", [])
+        await safe_send(context, chat.id, "🗑 *Shared media cleared\\!*")
+    elif which == "all":
+        await set_key(gid, "male_videos",   [])
+        await set_key(gid, "male_photos",   [])
+        await set_key(gid, "female_videos", [])
+        await set_key(gid, "female_photos", [])
+        await set_key(gid, "shared_media",  [])
+        await safe_send(context, chat.id, "🗑 *Sab media cleared\\!*")
+    else:
+        await safe_send(context, chat.id,
+            "❓ *Kya clear karein?*\n\n"
+            "`/clearmedia male`\n"
+            "`/clearmedia female`\n"
+            "`/clearmedia shared`\n"
+            "`/clearmedia all`"
+        )
+
+
+# ── /setbuttons ────────────────────────────────────────────
+async def setbuttons_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage:
+      /setbuttons
+        Button1 | https://link1.com
+        Button2 | https://link2.com || Button3 | https://link3.com
+
+    || = same row
+    Newline = new row
+    """
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    raw = " ".join(context.args) if context.args else ""
+    if not raw and update.message.reply_to_message:
+        raw = update.message.reply_to_message.text or ""
+
+    if not raw:
+        return await safe_send(context, chat.id,
+            "🔘 *Buttons Set Karo*\n\n"
+            "*Format:*\n"
+            "`/setbuttons`\n"
+            "`Rules | https://t.me/... || Channel | https://t.me/...`\n"
+            "`Support | https://t.me/...`\n\n"
+            "`||` \\= same row mein\n"
+            "New line \\= new row\n\n"
+            "*Example:*\n"
+            "`📜 Rules | https://t.me/rules || 📢 Channel | https://t.me/ch`\n"
+            "`💬 Support | https://t.me/support`"
+        )
+
+    # Parse
+    buttons = []
+    for line in raw.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        row     = []
+        chunks  = line.split("||")
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if "|" not in chunk:
+                continue
+            parts = chunk.split("|", 1)
+            label = parts[0].strip()
+            value = parts[1].strip()
+            kind  = "url" if value.startswith("http") else "callback"
+            row.append([label, kind, value])
+        if row:
+            buttons.append(row)
+
+    if not buttons:
+        return await safe_send(context, chat.id,
+            "❌ Format galat hai\\! Example:\n"
+            "`Rules | https://t.me/rules`"
+        )
+
+    await set_key(gid, "buttons", json.dumps(buttons))
+
+    # Preview
+    kb = build_markup(json.dumps(buttons))
+    await safe_send(context, chat.id,
+        f"✅ *{len(buttons)} rows, {sum(len(r) for r in buttons)} buttons saved\\!*\n\n"
+        f"Aisa dikhega welcome mein 👇",
+        reply_markup=kb,
+    )
+
+
+# ── /preview ───────────────────────────────────────────────
+async def preview_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    class FakeUser:
+        full_name  = "Test User"
+        first_name = "Test"
+        last_name  = "User"
+        username   = "testuser"
+        id         = 123456789
+
+    for gender, label in [("male", "👦 MALE"), ("female", "👧 FEMALE")]:
+        await send_welcome(context, chat.id, FakeUser(), gender, gn, "cache")
+        await asyncio.sleep(0.8)
+
+
+# ── /settings ──────────────────────────────────────────────
+async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, gn = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    s  = await get_settings(gid)
+    ok = lambda v: "✅" if v else "❌"
+
+    mv = len(s.get("male_videos",   [])) + len(s.get("male_photos",   []))
+    fv = len(s.get("female_videos", [])) + len(s.get("female_photos", []))
+    sh = len(s.get("shared_media",  []))
+
+    await safe_send(context, chat.id,
+        f"┌──────────────────────┐\n"
+        f"│    ⚙️ *SETTINGS*     │\n"
+        f"│    {esc(gn)}\n"
+        f"└──────────────────────┘\n\n"
+        f"*Template:* `{s.get('template', 'default')}`\n\n"
+        f"*Messages:*\n"
+        f"┣━ Shared msg: {ok(s.get('custom_msg'))}\n"
+        f"┣━ Male msg:   {ok(s.get('male_msg'))}\n"
+        f"┗━ Female msg: {ok(s.get('female_msg'))}\n\n"
+        f"*Media:*\n"
+        f"┣━ 👦 Male media:   *{mv}* items\n"
+        f"┣━ 👧 Female media: *{fv}* items\n"
+        f"┗━ 🔀 Shared:       *{sh}* items\n\n"
+        f"*Buttons:* {ok(s.get('buttons'))}\n"
+        f"*Groq AI:* {'✅ Active' if GROQ_API_KEY else '❌ No key'}\n\n"
+        f"_/preview se test karo_"
+    )
+
+
+# ── /delete ────────────────────────────────────────────────
+async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    gid, _ = get_gid(update, context)
+    if chat.type != "private" and not await is_admin(update, context):
+        return await update.message.reply_text("❌ Sirf admins!")
+    if not gid:
+        return await safe_send(context, chat.id, "⚠️ Pehle /connect chalaao\\!")
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Haan, sab delete karo", callback_data=f"del_confirm_{gid}")],
+        [InlineKeyboardButton("❌ Cancel",                callback_data="cancel")],
+    ])
+    await safe_send(context, chat.id,
+        "⚠️ *Sab settings delete karein?*\n\n"
+        "Isme shamil hai:\n"
+        "• Welcome messages\n"
+        "• Sab videos/photos\n"
+        "• Buttons\n"
+        "• Template\n\n"
+        "Yeh action undo nahi hoga\\!",
+        reply_markup=kb,
+    )
+
+
+# ============================================================
+#  WELCOME TRIGGER  (new member join)
+# ============================================================
+async def greet_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    r   = update.chat_member
+    old = r.old_chat_member.status
+    new = r.new_chat_member.status
+
+    # Only truly new joins
+    joined_statuses  = (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR)
+    left_statuses    = (ChatMemberStatus.LEFT,   ChatMemberStatus.BANNED,
+                        ChatMemberStatus.RESTRICTED)
+
+    if not (new in joined_statuses and old in left_statuses):
+        return
+
+    user = r.new_chat_member.user
+    chat = update.effective_chat
+
+    if user.is_bot:
+        return
+
+    gn = chat.title or "Group"
+    logger.info(f"👤 New member: {user.full_name} in {gn}")
+
+    gender, confidence, method = await detect_gender(
+        uid=user.id,
+        first=user.first_name or "",
+        last=user.last_name   or "",
+        username=user.username or "",
+    )
+
+    logger.info(f"🔍 Gender result: {gender} ({confidence:.0%}) via {method}")
+
+    if gender != "unknown" and confidence >= 0.7:
+        await send_welcome(context, chat.id, user, gender, gn, method)
+    else:
+        # Ask user to select gender
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👦 Main Male Hoon",   callback_data=f"gsel_male_{user.id}_{chat.id}"),
+            InlineKeyboardButton("👧 Main Female Hoon", callback_data=f"gsel_female_{user.id}_{chat.id}"),
+        ]])
+        await safe_send(context, chat.id,
+            f"┌──────────────────────┐\n"
+            f"│   👋 *WELCOME\\!* 👋   │\n"
+            f"└──────────────────────┘\n\n"
+            f"*{esc(user.first_name or 'User')}*, personalized welcome ke liye\n"
+            f"apna gender select karo 👇",
+            reply_markup=kb,
+        )
+
+
+# ── Gender selection callback ──────────────────────────────
+async def gender_select_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q      = update.callback_query
     await q.answer()
-    
-    d = q.data
-    clicker = update.effective_user.id
-    parts = d.split("_")
-    
+
+    parts  = q.data.split("_")   # gsel_male_UID_CID
     if len(parts) < 4:
         return
-    
-    gender, uid, cid = parts[1], int(parts[2]), int(parts[3])
-    
-    if clicker != uid:
-        return await q.answer("❌ Not for you!", show_alert=True)
-    
+
+    gender = parts[1]
+    uid    = int(parts[2])
+    cid    = int(parts[3])
+
+    if update.effective_user.id != uid:
+        return await q.answer("❌ Yeh button tumhare liye nahi!", show_alert=True)
+
     await cache_gender(uid, gender, 1.0)
-    
+
     try:
         user = (await context.bot.get_chat_member(cid, uid)).user
     except TelegramError:
         user = update.effective_user
-    
+
     try:
         gn = (await context.bot.get_chat(cid)).title or "Group"
     except TelegramError:
         gn = "Group"
-    
+
     try:
         await q.message.delete()
     except TelegramError:
         pass
-    
+
     await send_welcome(context, cid, user, gender, gn, "user_selected")
 
 
-# ============= CALLBACK HANDLER =============
+# ============================================================
+#  CALLBACK HANDLER
+# ============================================================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+    q    = update.callback_query
     data = q.data
-    
+
     if data == "cancel":
-        await q.message.delete()
-        return
-    
-    if data == "show_templates":
-        await template_cmd(update, context)
-        await q.message.delete()
-        return
-    
-    if data == "help_premium":
-        await safe_send(context, q.message.chat.id,
-            "┌─────────────────────┐\n"
-            "│  📖 *PREMIUM GUIDE*  │\n"
-            "└─────────────────────┘\n\n"
-            "*Variables:*\n"
-            "┣━ {name} - Full name\n"
-            "┣━ {username} - Username\n"
-            "┣━ {group} - Group name\n"
-            "┣━ {member_count} - Members\n"
-            "┣━ {date} - Current date\n"
-            "┗━ {gender_emoji} - 👦/👧\n\n"
-            "*Commands:*\n"
-            "┣━ /template - Set template\n"
-            "┣━ /setwelcome - Custom\n"
-            "┣━ /setmedia - Add media\n"
-            "┣━ /setbuttons - Add buttons\n"
-            "┗━ /preview - Test\n\n"
-            "✨ *Pro:* Use Markdown for formatting!")
-        await q.message.delete()
-        return
-    
-    if data == "setup_guide":
-        await safe_send(context, q.message.chat.id,
-            "┌─────────────────────┐\n"
-            "│  ⚙️ *SETUP GUIDE*    │\n"
-            "└─────────────────────┘\n\n"
-            "*Step 1:* Add bot to group as admin\n"
-            "*Step 2:* Run `/connect` in group\n"
-            "*Step 3:* Come back to DM\n"
-            "*Step 4:* Run `/template` to choose design\n"
-            "*Step 5:* Use `/preview` to test\n\n"
-            "🎉 *Done!* New members will get welcome messages!")
-        await q.message.delete()
-        return
-    
-    if data.startswith("template_"):
-        parts = data.split("_")
-        if len(parts) >= 3:
-            template_name = parts[1]
-            gid = int(parts[2])
-            await set_group_key(gid, "active_template", template_name)
-            await q.edit_message_text(f"✅ *{template_name.title()} template applied!*\n\nUse `/preview` to see how it looks.")
-        return
-    
-    if data.startswith("delete_confirm_"):
-        gid = int(data.split("_")[2])
-        await delete_group_key(gid)
-        await q.edit_message_text("✅ *All settings deleted!*")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
         return
 
-# ============= MAIN =============
+    if data == "show_templates":
+        await q.message.delete()
+        return await template_cmd(update, context)
+
+    if data == "help_guide":
+        await q.message.delete()
+        return await safe_send(context, q.message.chat.id,
+            "┌──────────────────────┐\n"
+            "│   📖 *GUIDE*         │\n"
+            "└──────────────────────┘\n\n"
+            "*Variables:*\n"
+            "`{name}` \\- Full name\n"
+            "`{username}` \\- @username\n"
+            "`{group}` \\- Group name\n"
+            "`{member_count}` \\- Members\n"
+            "`{date}` \\- DD/MM/YYYY\n"
+            "`{time}` \\- HH:MM\n"
+            "`{gender_emoji}` \\- 👦/👧\n"
+            "`{detect_method}` \\- AI method\n\n"
+            "*Workflow:*\n"
+            "1\\. /connect group mein\n"
+            "2\\. /template chuno\n"
+            "3\\. /setwelcome\\_male male msg\n"
+            "4\\. /setwelcome\\_female female msg\n"
+            "5\\. /addvideo\\_male \\(multiple ok\\)\n"
+            "6\\. /addvideo\\_female \\(multiple ok\\)\n"
+            "7\\. /setbuttons links\n"
+            "8\\. /preview test karo\n"
+            "9\\. 🎉 Done\\!"
+        )
+
+    if data == "setup_guide":
+        await q.message.delete()
+        return await safe_send(context, q.message.chat.id,
+            "┌──────────────────────┐\n"
+            "│   ⚙️ *SETUP GUIDE*   │\n"
+            "└──────────────────────┘\n\n"
+            "*Step 1:* Bot ko group mein admin banao\n"
+            "*Step 2:* Group mein `/connect` chalaao\n"
+            "*Step 3:* DM mein wapas aao\n"
+            "*Step 4:* `/template` se design chuno\n"
+            "*Step 5:* Male/female videos add karo\n"
+            "*Step 6:* `/preview` se test karo\n\n"
+            "🎉 *Done\\!* New members ko welcome jayega\\!"
+        )
+
+    if data.startswith("tpl_"):
+        parts    = data.split("_")
+        tpl_name = parts[1]
+        gid      = int(parts[2])
+        await set_key(gid, "template", tpl_name)
+        await q.edit_message_text(
+            f"✅ *{tpl_name.title()} template set\\!*\n\n"
+            f"Ab /preview se dekho kaise dikhega\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
+    if data.startswith("del_confirm_"):
+        gid = int(data.split("_")[2])
+        await delete_all(gid)
+        await q.edit_message_text(
+            "✅ *Sab settings delete ho gayi\\!*",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return
+
+
+# ============================================================
+#  ERROR HANDLER
+# ============================================================
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error: {context.error}")
+
+
+# ============================================================
+#  MAIN
+# ============================================================
 def main():
     if not BOT_TOKEN:
-        print("\n" + "=" * 50)
-        print("  ❌ BOT_TOKEN not set!")
-        print("=" * 50 + "\n")
+        print("\n" + "="*55)
+        print("  ❌ BOT_TOKEN environment variable set nahi hai!")
+        print("="*55 + "\n")
         return
-    
-    Path(SETTINGS_FILE).write_text("{}") if not Path(SETTINGS_FILE).exists() else None
-    
+
+    # Ensure settings file exists
+    p = Path(SETTINGS_FILE)
+    if not p.exists():
+        p.write_text("{}", encoding="utf-8")
+
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Commands
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("connect", connect_cmd))
-    app.add_handler(CommandHandler("template", template_cmd))
-    app.add_handler(CommandHandler("setwelcome", setwelcome_cmd))
-    app.add_handler(CommandHandler("setmedia", setmedia_cmd))
-    app.add_handler(CommandHandler("setbuttons", setbuttons_cmd))
-    app.add_handler(CommandHandler("preview", preview_cmd))
-    app.add_handler(CommandHandler("settings", settings_cmd))
-    app.add_handler(CommandHandler("delete", delete_cmd))
-    
-    # Old commands for backward compatibility
-    app.add_handler(CommandHandler("setwelcome_male", setwelcome_cmd))
-    app.add_handler(CommandHandler("setwelcome_female", setwelcome_cmd))
-    app.add_handler(CommandHandler("showset", settings_cmd))
-    
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(callback_handler, pattern="^(show_templates|help_premium|setup_guide|template_|cancel|delete_confirm_)"))
-    app.add_handler(CallbackQueryHandler(gender_cb, pattern=r"^gender_"))
-    
-    # Member join
+
+    # ── Commands ──────────────────────────────────────────
+    app.add_handler(CommandHandler("start",            start_cmd))
+    app.add_handler(CommandHandler("connect",          connect_cmd))
+    app.add_handler(CommandHandler("template",         template_cmd))
+
+    # Welcome messages
+    app.add_handler(CommandHandler("setwelcome",       setwelcome_cmd))
+    app.add_handler(CommandHandler("setwelcome_male",  setwelcome_male_cmd))
+    app.add_handler(CommandHandler("setwelcome_female",setwelcome_female_cmd))
+
+    # Media management
+    app.add_handler(CommandHandler("addvideo_male",    addvideo_male_cmd))
+    app.add_handler(CommandHandler("addvideo_female",  addvideo_female_cmd))
+    app.add_handler(CommandHandler("addvideo",         addvideo_shared_cmd))
+    app.add_handler(CommandHandler("listmedia",        listmedia_cmd))
+    app.add_handler(CommandHandler("clearmedia",       clearmedia_cmd))
+
+    # Buttons / preview / settings
+    app.add_handler(CommandHandler("setbuttons",       setbuttons_cmd))
+    app.add_handler(CommandHandler("preview",          preview_cmd))
+    app.add_handler(CommandHandler("settings",         settings_cmd))
+    app.add_handler(CommandHandler("showset",          settings_cmd))   # alias
+    app.add_handler(CommandHandler("delete",           delete_cmd))
+
+    # ── Callbacks ─────────────────────────────────────────
+    # Gender selection FIRST (specific pattern)
+    app.add_handler(CallbackQueryHandler(gender_select_cb,  pattern=r"^gsel_"))
+    # General callbacks
+    app.add_handler(CallbackQueryHandler(callback_handler,
+        pattern=r"^(cancel|show_templates|help_guide|setup_guide|tpl_|del_confirm_)"))
+
+    # ── Chat member join ──────────────────────────────────
     app.add_handler(ChatMemberHandler(greet_member, ChatMemberHandler.CHAT_MEMBER))
-    
-    # Error handler
-    async def err_handler(update, context):
-        logger.error(f"Error: {context.error}")
-    app.add_error_handler(err_handler)
-    
-    logger.info("🌹 PREMIUM WELCOME BOT v4.0 - ROSE STYLE running!")
-    print("\n" + "=" * 50)
-    print("  🌹 BOT IS RUNNING - ROSE STYLE!")
-    print("  ✨ Premium Features:")
-    print("     • Professional Templates")
-    print("     • Media Support")
-    print("     • Inline Buttons")
-    print("     • AI Gender Detection")
-    print("=" * 50 + "\n")
-    
+
+    # ── Error ─────────────────────────────────────────────
+    app.add_error_handler(error_handler)
+
+    logger.info("🌹 PREMIUM WELCOME BOT - Starting...")
+    print("\n" + "="*55)
+    print("  🌹 WELCOME BOT RUNNING!")
+    print("  ✅ Multiple videos per gender")
+    print("  ✅ Groq AI gender detection")
+    print("  ✅ Template + Video combo")
+    print("  ✅ Male/Female split messages")
+    print("  ✅ Random video picker")
+    print("="*55 + "\n")
+
     app.run_polling(allowed_updates=["message", "chat_member", "callback_query"])
+
 
 if __name__ == "__main__":
     main()
