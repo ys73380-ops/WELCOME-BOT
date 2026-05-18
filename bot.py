@@ -1,30 +1,22 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║                🌹 PREMIUM WELCOME BOT      ║
+║                🌹 PREMIUM WELCOME BOT                        ║
 ║  • Sirf 2 config commands: /set_male  aur  /set_female      ║
 ║  • Ek hi command se message set + video add (multiple)      ║
-║  • Multiple videos — welcome pe random ek play hota hai     ║
-║  • Inline buttons support                                   ║
+║  • /connect se group connect karo DM config ke liye         ║
 ╚══════════════════════════════════════════════════════════════╝
 
-🔥 SIMPLIFIED COMMANDS (admin only, group ya DM dono mein):
+🔥 COMMANDS:
 
-  /set_male     — Male message set + video add (reply+text)
-  /set_female   — Female message set + video add (reply+text)
-  /listmedia    — Kitne media hain dekho
-  /clearmedia   — Media clear karo (male/female/all)
-  /preview      — Test karo (DM mein group ID do)
-  /settings     — Current config dekho
-  /setbuttons   — Inline buttons set karo
-  /reset        — Sab settings reset karo
-
-📌 DM mein use karne ka tareeqa:
-  /set_male -100123456789 Welcome {name}!   (text+optional video reply)
-  ya kisi group message ko reply karke bhejo.
-
-VARIABLES (message mein use karo):
-  {name}, {first_name}, {username}, {mention}, {group},
-  {member_count}, {date}, {time}, {gender_emoji}
+  /connect     — Group mein use karo, DM config link milega
+  /set_male    — Male message set + video add (DM mein)
+  /set_female  — Female message set + video add (DM mein)
+  /listmedia   — Kitne media hain dekho
+  /clearmedia  — Media clear karo (male/female/all)
+  /preview     — Test karo
+  /settings    — Current config dekho
+  /setbuttons  — Inline buttons set karo
+  /reset       — Sab settings reset karo
 """
 
 import asyncio
@@ -67,10 +59,12 @@ log = logging.getLogger("WelcomeBot")
 _ESC_RE = re.compile(r'([_*\[\]()~`>#+\-=|{}.!\\])')
 
 def esc(text: str) -> str:
-    return _ESC_RE.sub(r'\\\1', str(text)) if text else ""
+    if not text:
+        return ""
+    return _ESC_RE.sub(r'\\\1', str(text))
 
 # ──────────────────────────────────────────────────────────────
-#  STORAGE (Redis → JSON fallback)
+#  STORAGE
 # ──────────────────────────────────────────────────────────────
 _redis = None
 _lock  = asyncio.Lock()
@@ -147,7 +141,7 @@ async def wipe(gid: int):
     await _write_file(data)
 
 # ──────────────────────────────────────────────────────────────
-#  GENDER CACHE
+#  GENDER DETECTION (unchanged, working)
 # ──────────────────────────────────────────────────────────────
 _gcache: Dict[int, Tuple[str, float]] = {}
 
@@ -175,9 +169,6 @@ async def gender_cache_get(uid: int) -> Optional[Tuple[str, float]]:
             pass
     return None
 
-# ──────────────────────────────────────────────────────────────
-#  GENDER DETECTION (Groq AI → Name DB)
-# ──────────────────────────────────────────────────────────────
 async def _groq_detect(first: str, last: str, username: str) -> Optional[str]:
     if not GROQ_API_KEY:
         return None
@@ -283,7 +274,7 @@ async def detect_gender(uid: int, first: str, last: str = "",
     return ("male", "guess")
 
 # ──────────────────────────────────────────────────────────────
-#  DEFAULT TEMPLATES (used when no custom message is set)
+#  DEFAULT TEMPLATES
 # ──────────────────────────────────────────────────────────────
 DEFAULT_MALE_MSG = (
     "🌟 *Welcome bhai, {name}\\!* 🌟\n\n"
@@ -341,74 +332,6 @@ async def render(text_template: str, user, group: str, gid: int,
     return result
 
 # ──────────────────────────────────────────────────────────────
-#  UTILS: GROUP IDENTIFICATION & ADMIN CHECK
-# ──────────────────────────────────────────────────────────────
-async def resolve_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
-    """
-    Returns group chat_id from:
-    - If in group: current chat id
-    - If in private:
-        * if reply to a message from a group (forwarded or original), use that chat id
-        * else if first argument is numeric ID or @username, resolve it
-        * else return None
-    """
-    chat = update.effective_chat
-    if chat.type != "private":
-        return chat.id
-
-    if update.message.reply_to_message:
-        reply = update.message.reply_to_message
-        if reply.forward_from_chat and reply.forward_from_chat.type in ["group", "supergroup"]:
-            return reply.forward_from_chat.id
-        if hasattr(reply, 'chat') and reply.chat.type in ["group", "supergroup"]:
-            return reply.chat.id
-
-    if context.args:
-        identifier = context.args[0]
-        if identifier.startswith("-100") and identifier[1:].isdigit():
-            return int(identifier)
-        if identifier.startswith("@"):
-            try:
-                chat_obj = await context.bot.get_chat(identifier)
-                if chat_obj.type in ["group", "supergroup"]:
-                    return chat_obj.id
-            except TelegramError:
-                pass
-    return None
-
-async def is_admin_of_group(context: ContextTypes.DEFAULT_TYPE, user_id: int, group_id: int) -> bool:
-    try:
-        member = await context.bot.get_chat_member(group_id, user_id)
-        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-    except TelegramError:
-        return False
-
-async def admin_guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
-    user_id = update.effective_user.id
-    group_id = await resolve_group_id(update, context)
-
-    if not group_id:
-        if update.effective_chat.type == "private":
-            await update.message.reply_text(
-                "❓ *Group nahi mila*\n\n"
-                "Tarika:\n"
-                "1. Group mein command bhejo\n"
-                "2. DM mein kisi group message ko reply karo\n"
-                "3. DM mein group ID ya @username likho, jaise:\n"
-                "`/set_male -100123456789 Hello {name}`",
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-        else:
-            await update.message.reply_text("❌ Yeh command sirf admins ke liye hai!")
-        return None
-
-    if not await is_admin_of_group(context, user_id, group_id):
-        await update.message.reply_text("❌ Aap is group ke admin nahi ho!")
-        return None
-
-    return group_id
-
-# ──────────────────────────────────────────────────────────────
 #  CORE: SEND WELCOME
 # ──────────────────────────────────────────────────────────────
 async def send_welcome(context: ContextTypes.DEFAULT_TYPE,
@@ -416,7 +339,6 @@ async def send_welcome(context: ContextTypes.DEFAULT_TYPE,
                        group_name: str, method: str) -> None:
     cfg = await load(chat_id)
 
-    # Use custom message if set, otherwise default template
     text = cfg.get(f"{gender}_msg")
     if not text:
         text = DEFAULT_MALE_MSG if gender == "male" else DEFAULT_FEMALE_MSG
@@ -465,7 +387,6 @@ async def send_welcome(context: ContextTypes.DEFAULT_TYPE,
         except TelegramError as e:
             log.error(f"Media send failed: {e} — sending text only")
 
-    # Fallback text only
     try:
         await context.bot.send_message(chat_id, text=final,
                                        parse_mode=ParseMode.MARKDOWN_V2, reply_markup=markup,
@@ -476,19 +397,126 @@ async def send_welcome(context: ContextTypes.DEFAULT_TYPE,
     log.info(f"✅ Welcome text ({gender}/{method}) → {user.full_name} in {chat_id}")
 
 # ──────────────────────────────────────────────────────────────
-#  COMBINED CONFIGURATION COMMANDS: /set_male , /set_female
+#  DM CONNECTION SESSION (user -> group_id)
 # ──────────────────────────────────────────────────────────────
-async def set_gender_config(update: Update, context: ContextTypes.DEFAULT_TYPE, gender: str):
-    group_id = await admin_guard(update, context)
-    if not group_id:
+_connected_groups: Dict[int, int] = {}  # user_id -> group_id
+
+async def get_connected_group(user_id: int) -> Optional[int]:
+    return _connected_groups.get(user_id)
+
+async def set_connected_group(user_id: int, group_id: int):
+    _connected_groups[user_id] = group_id
+    # Also store in Redis if available
+    r = await _get_redis()
+    if r:
+        try:
+            await r.setex(f"conn:{user_id}", 86400 * 7, str(group_id))
+        except Exception:
+            pass
+
+# ──────────────────────────────────────────────────────────────
+#  COMMANDS
+# ──────────────────────────────────────────────────────────────
+
+async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Group mein use karo – DM link bhejega"""
+    chat = update.effective_chat
+    user_id = update.effective_user.id
+
+    # Only works in groups
+    if chat.type == "private":
+        await update.message.reply_text(esc("❌ Ye command group mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
 
-    msg = update.message
-    text = " ".join(context.args[1:]) if len(context.args) > 1 else ""
-    if not text and msg.reply_to_message:
-        text = (msg.reply_to_message.text or msg.reply_to_message.caption or "").strip()
+    # Check if user is admin
+    try:
+        member = await context.bot.get_chat_member(chat.id, user_id)
+        if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            await update.message.reply_text(esc("❌ Sirf admin hi connect kar sakta hai."), parse_mode=ParseMode.MARKDOWN_V2)
+            return
+    except TelegramError:
+        await update.message.reply_text(esc("❌ Admin check failed."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
 
-    reply = msg.reply_to_message
+    group_id = chat.id
+    bot_username = (await context.bot.get_me()).username
+    deep_link = f"https://t.me/{bot_username}?start=connect_{group_id}"
+
+    await update.message.reply_text(
+        esc(f"🔗 *Connect to DM*\n\n"
+            f"Group: {chat.title}\n"
+            f"Group ID: `{group_id}`\n\n"
+            f"👇 Is link pe click kar aur DM mein setup kar:\n\n"
+            f"{deep_link}\n\n"
+            f"DM mein jaake /set_male ya /set_female use kar. Group ID nahi dena padega."),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        disable_web_page_preview=True
+    )
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle deep link connect_<group_id>"""
+    user_id = update.effective_user.id
+    args = context.args
+
+    if args and args[0].startswith("connect_"):
+        # Deep link: /start connect_-100123456789
+        try:
+            group_id = int(args[0].split("_", 1)[1])
+            await set_connected_group(user_id, group_id)
+            await update.message.reply_text(
+                esc(f"✅ Connected to group ID: `{group_id}`\n\n"
+                    f"Ab DM mein bina group ID diye /set_male ya /set_female use kar sakte ho.\n"
+                    f"Video add karne ke liye kisi video pe reply karke /set_male bhejo.\n\n"
+                    f"Commands: /set_male, /set_female, /listmedia, /clearmedia, /preview, /settings, /setbuttons, /reset"),
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+        except (ValueError, IndexError):
+            pass
+
+    # Normal /start
+    await update.message.reply_text(
+        esc("🌹 *Welcome Bot* — Simple Setup\n\n"
+            "**Pehle group mein /connect use karo.**\n"
+            "Phir DM mein aake ye commands use kar:\n\n"
+            "▪ /set_male — male message + video add\n"
+            "▪ /set_female — female message + video add\n"
+            "▪ /listmedia — media count\n"
+            "▪ /clearmedia — clear media\n"
+            "▪ /preview — test welcome\n"
+            "▪ /settings — current config\n"
+            "▪ /setbuttons — inline buttons\n"
+            "▪ /reset — delete all settings\n\n"
+            "Variables: {name}, {username}, {mention}, {group}, {member_count}, {date}, {time}, {gender_emoji}"),
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+async def set_gender_config(update: Update, context: ContextTypes.DEFAULT_TYPE, gender: str):
+    """DM mein config set karna, connected group use karega"""
+    user_id = update.effective_user.id
+    chat = update.effective_chat
+
+    # Only works in DM
+    if chat.type != "private":
+        await update.message.reply_text(esc("❌ Ye command DM mein use karo. Pehle group mein /connect karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+
+    group_id = await get_connected_group(user_id)
+    if not group_id:
+        await update.message.reply_text(
+            esc("❌ Koi group connected nahi hai.\n\n"
+                "Pehle group mein jaake /connect use karo, phir yahan aao."),
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return
+
+    # Get text from command arguments or reply message
+    text = " ".join(context.args) if context.args else ""
+    if not text and update.message.reply_to_message:
+        text = (update.message.reply_to_message.text or update.message.reply_to_message.caption or "").strip()
+
+    # Check for media in reply (video, photo, gif)
+    reply = update.message.reply_to_message
     media_id = None
     media_type = None
     if reply:
@@ -513,14 +541,11 @@ async def set_gender_config(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     if not actions:
         await update.message.reply_text(
-            f"📝 *{gender.title()} Configuration*\n\n"
-            "Usage:\n"
-            f"▪ `/set_{gender} <group_id> <message>` — set message\n"
-            f"▪ `/set_{gender} <group_id>` (reply to video/photo/gif) — add media\n"
-            f"▪ `/set_{gender} <group_id> <message>` + reply — both\n\n"
-            "Variables: `{{name}}`, `{{username}}`, `{{group}}`, `{{member_count}}`, etc.\n\n"
-            "DM example:\n"
-            f"`/set_{gender} -100123456789 Welcome {{name}}!`",
+            esc(f"📝 {gender.title()} Configuration\n\n"
+                f"Message set karne ke liye: `/set_{gender} Your message here`\n"
+                f"Video add karne ke liye: video pe reply karke `/set_{gender}` bhejo.\n\n"
+                f"Variables: {{name}}, {{username}}, {{group}}, {{member_count}}, etc.\n\n"
+                f"Connected group ID: `{group_id}`"),
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
@@ -533,33 +558,31 @@ async def cmd_set_male(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_set_female(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_gender_config(update, context, "female")
 
-# ──────────────────────────────────────────────────────────────
-#  OTHER COMMANDS
-# ──────────────────────────────────────────────────────────────
 async def cmd_listmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
     if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo group mein."), parse_mode=ParseMode.MARKDOWN_V2)
         return
     cfg = await load(group_id)
     mm = len(cfg.get("male_media", []))
     fm = len(cfg.get("female_media", []))
-    await update.message.reply_text(
-        f"📂 *Media List*\n\n"
-        f"👦 Male: {mm} items\n"
-        f"👧 Female: {fm} items\n\n"
-        f"Clear: `/clearmedia male/female/all`",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    await update.message.reply_text(esc(f"📂 Media List\n\n👦 Male: {mm} items\n👧 Female: {fm} items"), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def cmd_clearmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
     if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
     if not context.args:
-        await update.message.reply_text(
-            "Usage: `/clearmedia male` / `female` / `all`",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+        await update.message.reply_text(esc("Usage: /clearmedia male / female / all"), parse_mode=ParseMode.MARKDOWN_V2)
         return
     which = context.args[0].lower()
     cfg = await load(group_id)
@@ -571,14 +594,19 @@ async def cmd_clearmedia(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cfg["male_media"] = []
         cfg["female_media"] = []
     else:
-        await update.message.reply_text("Use: male / female / all")
+        await update.message.reply_text(esc("Use: male / female / all"), parse_mode=ParseMode.MARKDOWN_V2)
         return
     await dump(group_id, cfg)
-    await update.message.reply_text(f"🗑 {which.title()} media clear ho gaya")
+    await update.message.reply_text(esc(f"🗑 {which.title()} media clear ho gaya"), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def cmd_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
     if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
     chat = await context.bot.get_chat(group_id)
     group_name = chat.title or "Group"
@@ -589,47 +617,51 @@ async def cmd_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = "testuser"
         id = 123456789
     fu = FakeUser()
-    await update.message.reply_text("🔍 Sending preview...")
+    await update.message.reply_text(esc("🔍 Sending preview..."), parse_mode=ParseMode.MARKDOWN_V2)
     await asyncio.sleep(0.5)
     await send_welcome(context, group_id, fu, "male", group_name, "cache")
     await asyncio.sleep(1)
     await send_welcome(context, group_id, fu, "female", group_name, "cache")
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
     if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
     cfg = await load(group_id)
     chat = await context.bot.get_chat(group_id)
     mm = len(cfg.get("male_media", []))
     fm = len(cfg.get("female_media", []))
     await update.message.reply_text(
-        f"⚙️ *Settings — {esc(chat.title)}*\n\n"
-        f"Male message: {'✅' if cfg.get('male_msg') else '❌ (using default)'}\n"
-        f"Female message: {'✅' if cfg.get('female_msg') else '❌ (using default)'}\n"
-        f"Male media: {mm} items\n"
-        f"Female media: {fm} items\n"
-        f"Buttons: {'✅' if cfg.get('buttons') else '❌'}\n"
-        f"Groq AI: {'✅ Active' if GROQ_API_KEY else '❌ No API key'}",
+        esc(f"⚙️ Settings — {chat.title}\n\n"
+            f"Male message: {'✅' if cfg.get('male_msg') else '❌ (default)'}\n"
+            f"Female message: {'✅' if cfg.get('female_msg') else '❌ (default)'}\n"
+            f"Male media: {mm} items\n"
+            f"Female media: {fm} items\n"
+            f"Buttons: {'✅' if cfg.get('buttons') else '❌'}\n"
+            f"Groq AI: {'✅ Active' if GROQ_API_KEY else '❌ No API key'}"),
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
 async def cmd_setbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
-    if not group_id:
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
-    raw = " ".join(context.args[1:]) if len(context.args) > 1 else ""
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
+    if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    raw = " ".join(context.args) if context.args else ""
     if not raw and update.message.reply_to_message:
         raw = update.message.reply_to_message.text or ""
     if not raw:
         await update.message.reply_text(
-            "🔘 *Buttons Setup*\n\n"
-            "Format:\n"
-            "`Label | https://link.com || Label2 | https://link2.com`\n"
-            "New line = new row, `||` = same row\n\n"
-            "Example:\n"
-            "`📜 Rules | https://t.me/rules || 📢 Channel | https://t.me/ch`\n"
-            "`💬 Support | https://t.me/support`",
+            esc("🔘 Buttons Setup\n\nFormat:\n`Label | https://link.com || Label2 | https://link2.com`\nNew line = new row, `||` = same row\n\nExample:\n`📜 Rules | https://t.me/rules || 📢 Channel | https://t.me/ch`"),
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
@@ -649,47 +681,33 @@ async def cmd_setbuttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             rows.append(row)
     if not rows:
-        await update.message.reply_text("❌ Invalid format! Use: Label | URL")
+        await update.message.reply_text(esc("❌ Invalid format! Use: Label | URL"), parse_mode=ParseMode.MARKDOWN_V2)
         return
     await set_val(group_id, "buttons", json.dumps(rows))
     total = sum(len(r) for r in rows)
-    await update.message.reply_text(f"✅ {len(rows)} rows, {total} buttons saved!")
+    await update.message.reply_text(esc(f"✅ {len(rows)} rows, {total} buttons saved!"), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    group_id = await admin_guard(update, context)
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(esc("❌ DM mein use karo."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
+    user_id = update.effective_user.id
+    group_id = await get_connected_group(user_id)
     if not group_id:
+        await update.message.reply_text(esc("❌ Pehle /connect use karo."), parse_mode=ParseMode.MARKDOWN_V2)
         return
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, reset everything", callback_data=f"reset|{group_id}"),
         InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
     ]])
     await update.message.reply_text(
-        "⚠️ *Reset all settings?*\n\n"
-        "Messages, media, buttons will be deleted. This cannot be undone.",
+        esc("⚠️ Reset all settings?\n\nMessages, media, buttons will be deleted. This cannot be undone."),
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=kb
     )
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🌹 *Welcome Bot* — Simplified Setup\n\n"
-        "*Commands (admin only, group or DM):*\n"
-        "▪ `/set_male` — set male message + add video\n"
-        "▪ `/set_female` — set female message + add video\n"
-        "▪ `/listmedia` — view media count\n"
-        "▪ `/clearmedia` — clear media\n"
-        "▪ `/preview` — test welcome\n"
-        "▪ `/settings` — current config\n"
-        "▪ `/setbuttons` — inline buttons\n"
-        "▪ `/reset` — delete all settings\n\n"
-        "*Variables:* `{name}`, `{username}`, `{mention}`, `{group}`, `{member_count}`, `{date}`, `{time}`, `{gender_emoji}`\n\n"
-        "📌 *DM Usage:* reply to a group message or provide group ID\n"
-        "Example: `/set_male -100123456789 Welcome {name}!`",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-
 # ──────────────────────────────────────────────────────────────
-#  NEW MEMBER HANDLER
+#  NEW MEMBER HANDLER (unchanged)
 # ──────────────────────────────────────────────────────────────
 async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = update.chat_member
@@ -722,8 +740,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("reset|"):
         gid = int(data.split("|")[1])
         await wipe(gid)
-        await q.edit_message_text("✅ *All settings deleted for this group.*",
-                                  parse_mode=ParseMode.MARKDOWN_V2)
+        await q.edit_message_text(esc("✅ All settings deleted for this group."), parse_mode=ParseMode.MARKDOWN_V2)
     elif data == "cancel":
         try:
             await q.message.delete()
@@ -748,6 +765,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("connect", cmd_connect))
     app.add_handler(CommandHandler("set_male", cmd_set_male))
     app.add_handler(CommandHandler("set_female", cmd_set_female))
     app.add_handler(CommandHandler("listmedia", cmd_listmedia))
@@ -764,10 +782,9 @@ def main():
     log.info("🌹 Premium Welcome Bot starting...")
     print("\n" + "=" * 50)
     print("  🌹 PREMIUM WELCOME BOT RUNNING")
-    print("  ✅ DM + Group commands supported")
-    print("  ✅ Only 2 config commands: /set_male & /set_female")
-    print("  ✅ Groq AI 99% gender detection")
-    print("  ✅ Multiple videos per gender")
+    print("  ✅ /connect in group → DM link")
+    print("  ✅ DM mein bina group ID config")
+    print("  ✅ Sirf 2 commands: /set_male & /set_female")
     print("=" * 50 + "\n")
 
     app.run_polling(allowed_updates=["message", "chat_member", "callback_query"])
