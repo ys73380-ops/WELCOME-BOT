@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Welcome Bot Gender Detection + Full Feature Set
-Fixed version — all 12 bugs resolved
 """
 
 import os
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Validate at startup, not inside main()
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN environment variable set nahi hai.")
 if not GROQ_API_KEY:
@@ -40,7 +38,6 @@ DATA_FILE = "welcome_bot_data.json"
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ---------- Database Helper (thread-safe) ----------
-# FIX #4: Added threading lock to prevent race condition / data corruption
 _data_lock = threading.Lock()
 
 def load_data():
@@ -52,7 +49,6 @@ def load_data():
 
 def save_data(data):
     with _data_lock:
-        # Atomic write: write to temp file first, then rename
         tmp = DATA_FILE + ".tmp"
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -82,16 +78,12 @@ def delete_settings(chat_id):
 
 def get_linked_chats(user_id):
     data = load_data()
-    # FIX #8: Cast both sides to int for safe comparison
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
 
 # ---------- GROQ Gender Detection ----------
-# FIX #7: Fixed the common_female_names check — was always False for full names
-# FIX #12: Added timeout to Groq API call to prevent blocking
 async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
     """Use GROQ LLM to detect gender. Returns 'male', 'female', or 'unknown'."""
     try:
-        # FIX #7: Check first_name only (not full_name) against the list — was dead code before
         common_female_names = {
             'pinky', 'sweety', 'baby', 'gudiya', 'soni', 'pappi',
             'rinky', 'tinku', 'bittu', 'chintu', 'pintu', 'rani',
@@ -109,7 +101,6 @@ async def detect_gender(first_name: str, last_name: str = "", username: str = ""
             "IMPORTANT: Names like Pinky, Sweety, Baby, Gudiya are FEMALE names in Indian context.\n"
             "If unsure, reply 'unknown'."
         )
-        # FIX #12: Added timeout=10 so it never hangs the bot
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
@@ -132,11 +123,11 @@ def esc(text: str) -> str:
     return escape_markdown(text, version=2)
 
 def smart_truncate(text: str, limit: int = 100) -> str:
-    # FIX #5: Don't add '...' if text is already short enough
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
 
+# ---------- KEY FIX: send_welcome — proper MarkdownV2 escaping ----------
 async def send_welcome(context, chat_id, user, gender_key):
     settings = get_settings(chat_id)
     gdata = settings.get(gender_key, {"messages": [], "videos": []})
@@ -150,11 +141,23 @@ async def send_welcome(context, chat_id, user, gender_key):
 
     msg_template = random.choice(messages)
     gender_label = "👦 Male" if gender_key == "male" else "👧 Female" if gender_key == "female" else "🧑 Member"
-    name_mention = f"[{user.first_name}](tg://user?id={user.id})"
-    msg = msg_template.replace("{name}", user.first_name)
-    msg = msg.replace("{mention}", name_mention)
-    msg = msg.replace("{username}", f"@{user.username}" if user.username else user.first_name)
-    msg = msg.replace("{gender}", gender_label)
+
+    # ✅ FIX: Build the final string FIRST (plain text replacements),
+    #         THEN escape the whole thing for MarkdownV2.
+    #         {mention} is handled separately as an inline link after escaping.
+
+    # Step 1: Replace all placeholders EXCEPT {mention} with plain text
+    plain = msg_template
+    plain = plain.replace("{name}", user.first_name)
+    plain = plain.replace("{username}", f"@{user.username}" if user.username else user.first_name)
+    plain = plain.replace("{gender}", gender_label)
+
+    # Step 2: Split on {mention} so we can handle it separately
+    parts = plain.split("{mention}")
+
+    # Step 3: Escape each part individually, then join with the MarkdownV2 mention link
+    mention_md = f"[{esc(user.first_name)}](tg://user?id={user.id})"
+    msg = mention_md.join([esc(p) for p in parts])
 
     video_id = random.choice(videos) if videos else None
     kb = [[InlineKeyboardButton(btn["text"], url=btn["url"])] for btn in buttons]
@@ -163,20 +166,46 @@ async def send_welcome(context, chat_id, user, gender_key):
     try:
         if video_id:
             await context.bot.send_video(
-                chat_id=chat_id, video=video_id,
-                # FIX #6: Changed ParseMode.MARKDOWN → MARKDOWN_V2 for consistency
-                caption=msg, parse_mode=ParseMode.MARKDOWN_V2,
+                chat_id=chat_id,
+                video=video_id,
+                caption=msg,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup
             )
         else:
             await context.bot.send_message(
-                chat_id=chat_id, text=msg,
+                chat_id=chat_id,
+                text=msg,
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup
             )
+        logger.info(f"✅ Welcome sent to {chat_id} for {user.first_name} ({gender_key})")
     except Exception as e:
-        logger.error(f"Send welcome error: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user.first_name}!")
+        # ✅ FIX: Log the FULL error so you can debug, then send plain fallback
+        logger.error(f"Send welcome error (MarkdownV2 parse failed?): {e} | msg was: {msg}")
+        try:
+            # Fallback: send without any markdown
+            plain_fallback = msg_template
+            plain_fallback = plain_fallback.replace("{name}", user.first_name)
+            plain_fallback = plain_fallback.replace("{mention}", f"@{user.username}" if user.username else user.first_name)
+            plain_fallback = plain_fallback.replace("{username}", f"@{user.username}" if user.username else user.first_name)
+            plain_fallback = plain_fallback.replace("{gender}", gender_label)
+            if video_id:
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=video_id,
+                    caption=plain_fallback,
+                    reply_markup=reply_markup
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=plain_fallback,
+                    reply_markup=reply_markup
+                )
+        except Exception as e2:
+            logger.error(f"Fallback also failed: {e2}")
+            await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user.first_name}!")
 
 # ---------- Conversation States ----------
 WAITING_MALE_MSG, WAITING_MALE_VIDEO = 1, 2
@@ -230,7 +259,7 @@ async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# ---------- /disconnect (FIX #9: New command — disconnect without data loss) ----------
+# ---------- /disconnect ----------
 async def cmd_disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -242,7 +271,6 @@ async def cmd_disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     settings = get_settings(chat.id)
     settings["active"] = False
-    # Remove this user from admins list for this group
     settings["admins"] = [a for a in settings["admins"] if int(a) != int(user.id)]
     save_settings(chat.id, settings)
     await update.message.reply_text(
@@ -301,7 +329,7 @@ async def cmd_set_unknown(update, context): return await setup_start(update, con
 async def recv_gender_msg(update, context):
     context.user_data["msg"] = update.message.text
     gender = context.user_data["gender"]
-    preview = esc(smart_truncate(context.user_data["msg"]))  # FIX #5
+    preview = esc(smart_truncate(context.user_data["msg"]))
     await update.message.reply_text(
         f"✅ *Message saved successfully\\!* 🎉\n\n"
         f"📝 *Your {esc(gender)} welcome message:*\n`{preview}`\n\n"
@@ -323,7 +351,6 @@ async def recv_gender_video(update, context):
             update.message.document.mime_type.startswith("video"):
         video_id = update.message.document.file_id
 
-    # FIX #1: Track gdata outside loop with a safe default
     gdata = {"messages": [], "videos": []}
     for chat_id in context.user_data.get("linked", []):
         settings = get_settings(chat_id)
@@ -350,7 +377,6 @@ async def skip_video(update, context):
         await update.message.reply_text("❌ Pehle message to bhejo.")
         return ConversationHandler.END
 
-    # FIX #1: Safe gdata reference outside loop
     gdata = {"messages": [], "videos": []}
     for chat_id in context.user_data.get("linked", []):
         settings = get_settings(chat_id)
@@ -414,7 +440,6 @@ async def recv_more_video(update, context):
     if update.message.video:
         video_id = update.message.video.file_id
 
-    # FIX #1: Safe gdata reference
     gdata = {"messages": [], "videos": []}
     for chat_id in context.user_data.get("linked", []):
         settings = get_settings(chat_id)
@@ -483,7 +508,7 @@ async def clearmedia_callback(update, context):
     else:
         await query.edit_message_text("❌ Cancel\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
-# ---------- /clearbuttons (FIX #11: New command) ----------
+# ---------- /clearbuttons ----------
 async def cmd_clearbuttons(update, context):
     if update.effective_chat.type != "private":
         return
@@ -613,7 +638,6 @@ async def cancel(update, context):
     return ConversationHandler.END
 
 # ---------- New Member Handler ----------
-# FIX #3: Added note — bot MUST be admin in the group for ChatMemberHandler.CHAT_MEMBER to work
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.chat_member:
         return
@@ -703,10 +727,10 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("connect", cmd_connect))
-    app.add_handler(CommandHandler("disconnect", cmd_disconnect))   # FIX #9
+    app.add_handler(CommandHandler("disconnect", cmd_disconnect))
     app.add_handler(CommandHandler("listmedia", cmd_listmedia))
     app.add_handler(CommandHandler("clearmedia", cmd_clearmedia))
-    app.add_handler(CommandHandler("clearbuttons", cmd_clearbuttons))  # FIX #11
+    app.add_handler(CommandHandler("clearbuttons", cmd_clearbuttons))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("reset", cmd_reset))
@@ -717,10 +741,9 @@ def main():
     app.add_handler(button_conv)
     app.add_handler(CallbackQueryHandler(clearmedia_callback, pattern="^(confirm|cancel)_clear$"))
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset$"))
-    # FIX #3: Note — requires bot to be admin in group for this event to fire
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🚀 Bot started (all bugs fixed)")
+    logger.info("🚀 Bot started (send_welcome MarkdownV2 fix applied)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
