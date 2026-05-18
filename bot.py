@@ -207,6 +207,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
 # ─── /connect Command (in group) ─────────────────────────────────────────────
+# ─── /connect Command (in group) ─────────────────────────────────────────────
 async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -228,10 +229,17 @@ async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["chat_title"] = chat.title
     db.save_settings(chat.id, settings)
 
+    # 🔘 Button to open bot DM
+    bot_username = context.bot.username
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Bot DM mein jaakar settings karein", url=f"https://t.me/{bot_username}")]
+    ])
+
     await update.message.reply_text(
-        f"✅ Bot connected to *{chat.title}*\\!\n"
-        f"Ab DM mein [@me](tg://user?id={context.bot.id}) jaake settings karo\\.",
-        parse_mode=ParseMode.MARKDOWN_V2
+        f"✅ Bot connected to *{chat.title}*\\!\n\n"
+        f"Ab neeche diye gaye button par click karein aur DM mein settings karein\\.",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=keyboard
     )
 
 # ─── /set_male ConversationHandler ───────────────────────────────────────────
