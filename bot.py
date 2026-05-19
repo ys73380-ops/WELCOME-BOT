@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Welcome Bot Gender Detection + Full Feature Set
+Updated: Smart gender detection (never unknown fallback) + new welcome format
 """
 
 import os
@@ -80,43 +81,104 @@ def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
 
-# ---------- GROQ Gender Detection ----------
-async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
-    """Use GROQ LLM to detect gender. Returns 'male', 'female', or 'unknown'."""
-    try:
-        common_female_names = {
-            'pinky', 'sweety', 'baby', 'gudiya', 'soni', 'pappi',
-            'rinky', 'tinku', 'bittu', 'chintu', 'pintu', 'rani',
-            'priya', 'kavya', 'neha', 'pooja', 'anjali', 'divya'
-        }
-        if first_name.lower() in common_female_names:
-            logger.info(f"Special case female name: {first_name}")
-            return "female"
+# ---------- GROQ Smart Gender Detection ----------
+# Known Indian female names (quick lookup before API call)
+KNOWN_FEMALE_NAMES = {
+    'pinky', 'sweety', 'baby', 'gudiya', 'soni', 'pappi',
+    'rinky', 'tinku', 'rani', 'priya', 'kavya', 'neha',
+    'pooja', 'anjali', 'divya', 'komal', 'simran', 'preeti',
+    'nisha', 'shweta', 'riya', 'aisha', 'fatima', 'zara',
+    'mehak', 'sakshi', 'pallavi', 'sneha', 'swati', 'mansi',
+    'khushi', 'dimple', 'rekha', 'meena', 'geeta', 'sunita',
+    'sita', 'radha', 'lakshmi', 'durga', 'parvati', 'uma',
+    'ananya', 'ishita', 'tanya', 'renu', 'mamta', 'seema',
+    'reena', 'veena', 'leena', 'meera', 'heena', 'teena'
+}
 
+KNOWN_MALE_NAMES = {
+    'rahul', 'rohit', 'amit', 'suresh', 'ramesh', 'vikram',
+    'arjun', 'raj', 'ravi', 'anil', 'sunil', 'kapil',
+    'vikas', 'ajay', 'vijay', 'sanjay', 'manoj', 'deepak',
+    'rakesh', 'naresh', 'dinesh', 'ganesh', 'mahesh', 'ritesh',
+    'mukesh', 'rupesh', 'prakash', 'aakash', 'subhash', 'kailash',
+    'mohit', 'rohit', 'lalit', 'sumit', 'pulkit', 'ankit',
+    'nikhil', 'akhil', 'sahil', 'rahul', 'vishal', 'kushal',
+    'danish', 'manish', 'harish', 'satish', 'ashish', 'jagdish',
+    'amir', 'bilal', 'imran', 'faisal', 'hassan', 'ali',
+    'aryan', 'ishan', 'krishna', 'shyam', 'ram', 'shiv'
+}
+
+async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
+    """
+    Smart gender detection using name lookup + GROQ LLM.
+    NEVER returns 'unknown' — always forces male or female decision.
+    Falls back to random if truly ambiguous.
+    """
+    name_lower = first_name.lower().strip()
+
+    # Step 1: Quick local lookup
+    if name_lower in KNOWN_FEMALE_NAMES:
+        logger.info(f"Local lookup → female: {first_name}")
+        return "female"
+
+    if name_lower in KNOWN_MALE_NAMES:
+        logger.info(f"Local lookup → male: {first_name}")
+        return "male"
+
+    # Step 2: GROQ smart detection — force a decision
+    try:
         full_name = f"{first_name} {last_name}".strip()
         prompt = (
-            f"Based on the name '{full_name}' (username: @{username}), determine the gender.\n"
-            "Reply with ONLY one word: 'male', 'female', or 'unknown'.\n"
-            "Consider Indian, Arabic, English, and international names.\n"
-            "IMPORTANT: Names like Pinky, Sweety, Baby, Gudiya are FEMALE names in Indian context.\n"
-            "If unsure, reply 'unknown'."
+            f"You are a gender detection expert specializing in Indian, Arabic, English, and international names.\n\n"
+            f"Name: '{full_name}'\n"
+            f"Username: '@{username}'\n\n"
+            f"Your task: Determine if this person is MALE or FEMALE.\n\n"
+            f"Rules:\n"
+            f"- You MUST reply with ONLY one word: 'male' or 'female'\n"
+            f"- DO NOT reply 'unknown' under any circumstance\n"
+            f"- Use every clue: name origin, suffix patterns, username hints\n"
+            f"- Indian female names often end in 'a', 'i', 'ee', 'ya'\n"
+            f"- Indian male names often end in 'sh', 'al', 'it', 'an', 'ar'\n"
+            f"- Arabic female: Fatima, Aisha, Zara, Sara, Noor, Haya\n"
+            f"- Arabic male: Ali, Omar, Hassan, Ahmed, Mohammed, Bilal\n"
+            f"- If you are even slightly unsure, make your BEST educated guess\n"
+            f"- Your answer must be exactly: male OR female\n\n"
+            f"Answer:"
         )
+
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=10,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a gender classifier. You ONLY output 'male' or 'female'. Never say unknown, never explain."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=5,
             temperature=0.1,
             timeout=10,
         )
+
         result = response.choices[0].message.content.strip().lower()
+        logger.info(f"GROQ result for '{full_name}': {result}")
+
         if "female" in result:
             return "female"
         elif "male" in result:
             return "male"
-        return "unknown"
+        else:
+            # GROQ returned something unexpected — random fallback
+            chosen = random.choice(["male", "female"])
+            logger.warning(f"GROQ unexpected response '{result}' for '{full_name}' → random: {chosen}")
+            return chosen
+
     except Exception as e:
-        logger.error(f"GROQ gender detection error: {e}")
-        return "unknown"
+        # API error — random fallback (never unknown)
+        chosen = random.choice(["male", "female"])
+        logger.error(f"GROQ error: {e} → random fallback: {chosen}")
+        return chosen
+
 
 # ---------- Helper ----------
 def esc(text: str) -> str:
@@ -127,37 +189,79 @@ def smart_truncate(text: str, limit: int = 100) -> str:
         return text
     return text[:limit] + "..."
 
-# ---------- KEY FIX: send_welcome — proper MarkdownV2 escaping ----------
+
+# ---------- send_welcome — Screenshot style format ----------
+# Format: 💗 welcome ×{name}× @{username}
+# Video comes WITH caption (video between greeting + message body)
+
 async def send_welcome(context, chat_id, user, gender_key):
     settings = get_settings(chat_id)
+
+    # If gender_key is "unknown", randomly pick male or female
+    # (This is extra safety — detect_gender should never return unknown now)
+    if gender_key == "unknown":
+        gender_key = random.choice(["male", "female"])
+        logger.info(f"Unknown gender → randomly using: {gender_key}")
+
     gdata = settings.get(gender_key, {"messages": [], "videos": []})
+
+    # Fallback: if chosen gender has no media, try the other
+    if not gdata.get("messages") and not gdata.get("videos"):
+        alt = "female" if gender_key == "male" else "male"
+        alt_data = settings.get(alt, {"messages": [], "videos": []})
+        if alt_data.get("messages") or alt_data.get("videos"):
+            logger.info(f"No media for {gender_key}, using {alt} media as fallback")
+            gdata = alt_data
+
     messages = gdata.get("messages", [])
     videos = gdata.get("videos", [])
     buttons = settings.get("buttons", [])
 
+    # Build display name
+    display_name = user.first_name
+    username_str = f"@{user.username}" if user.username else user.first_name
+
+    # ---- Screenshot-style header ----
+    # 💗 welcome ×{name}× @{username}
+    # This is built in MarkdownV2
+
     if not messages:
-        await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user.first_name}!")
+        # No custom message — send screenshot-style default
+        header = (
+            f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=header,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"💗 welcome ×{display_name}× {username_str}"
+            )
         return
 
+    # Pick random message template
     msg_template = random.choice(messages)
-    gender_label = "👦 Male" if gender_key == "male" else "👧 Female" if gender_key == "female" else "🧑 Member"
 
-    # ✅ FIX: Build the final string FIRST (plain text replacements),
-    #         THEN escape the whole thing for MarkdownV2.
-    #         {mention} is handled separately as an inline link after escaping.
-
-    # Step 1: Replace all placeholders EXCEPT {mention} with plain text
+    # Step 1: Replace placeholders with plain text
     plain = msg_template
-    plain = plain.replace("{name}", user.first_name)
-    plain = plain.replace("{username}", f"@{user.username}" if user.username else user.first_name)
-    plain = plain.replace("{gender}", gender_label)
+    plain = plain.replace("{name}", display_name)
+    plain = plain.replace("{username}", username_str)
+    plain = plain.replace("{gender}", "👦 Male" if gender_key == "male" else "👧 Female")
 
-    # Step 2: Split on {mention} so we can handle it separately
+    # Step 2: Split on {mention} and handle separately
     parts = plain.split("{mention}")
+    mention_md = f"[{esc(display_name)}](tg://user?id={user.id})"
+    body_md = mention_md.join([esc(p) for p in parts])
 
-    # Step 3: Escape each part individually, then join with the MarkdownV2 mention link
-    mention_md = f"[{esc(user.first_name)}](tg://user?id={user.id})"
-    msg = mention_md.join([esc(p) for p in parts])
+    # Step 3: Build full caption with screenshot-style header
+    # Header: 💗 welcome ×Name× @username
+    # Then the custom message body below
+    header_md = f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
+    full_msg = f"{header_md}\n\n{body_md}"
 
     video_id = random.choice(videos) if videos else None
     kb = [[InlineKeyboardButton(btn["text"], url=btn["url"])] for btn in buttons]
@@ -165,31 +269,34 @@ async def send_welcome(context, chat_id, user, gender_key):
 
     try:
         if video_id:
+            # Video with caption = message appears WITH the video (between header style)
             await context.bot.send_video(
                 chat_id=chat_id,
                 video=video_id,
-                caption=msg,
+                caption=full_msg,
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup
             )
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=msg,
+                text=full_msg,
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup
             )
-        logger.info(f"✅ Welcome sent to {chat_id} for {user.first_name} ({gender_key})")
+        logger.info(f"✅ Welcome sent to {chat_id} for {display_name} ({gender_key})")
+
     except Exception as e:
-        # ✅ FIX: Log the FULL error so you can debug, then send plain fallback
-        logger.error(f"Send welcome error (MarkdownV2 parse failed?): {e} | msg was: {msg}")
+        logger.error(f"MarkdownV2 parse error: {e} | msg: {full_msg}")
+        # Plain text fallback
         try:
-            # Fallback: send without any markdown
-            plain_fallback = msg_template
-            plain_fallback = plain_fallback.replace("{name}", user.first_name)
-            plain_fallback = plain_fallback.replace("{mention}", f"@{user.username}" if user.username else user.first_name)
-            plain_fallback = plain_fallback.replace("{username}", f"@{user.username}" if user.username else user.first_name)
-            plain_fallback = plain_fallback.replace("{gender}", gender_label)
+            plain_fallback = f"💗 welcome ×{display_name}× {username_str}\n\n"
+            plain_fallback += msg_template
+            plain_fallback = plain_fallback.replace("{name}", display_name)
+            plain_fallback = plain_fallback.replace("{mention}", username_str)
+            plain_fallback = plain_fallback.replace("{username}", username_str)
+            plain_fallback = plain_fallback.replace("{gender}", "Male" if gender_key == "male" else "Female")
+
             if video_id:
                 await context.bot.send_video(
                     chat_id=chat_id,
@@ -205,7 +312,11 @@ async def send_welcome(context, chat_id, user, gender_key):
                 )
         except Exception as e2:
             logger.error(f"Fallback also failed: {e2}")
-            await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user.first_name}!")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"💗 welcome ×{display_name}× {username_str}"
+            )
+
 
 # ---------- Conversation States ----------
 WAITING_MALE_MSG, WAITING_MALE_VIDEO = 1, 2
@@ -254,7 +365,7 @@ async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]])
     await update.message.reply_text(
         f"✅ Bot connected to *{esc(chat.title)}*\\!\n\n"
-        f"Ab DM mein jaakar /set\\_male, /set\\_female, /set\\_unknown use karo\\.",
+        f"Ab DM mein jaakar /set\\_male, /set\\_female use karo\\.",
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=keyboard
     )
@@ -287,7 +398,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌹 *Welcome Bot* \\- Gender Detection\n\n"
         "▪ /set\\_male — male message \\+ video\n"
         "▪ /set\\_female — female message \\+ video\n"
-        "▪ /set\\_unknown — unknown gender message \\+ video\n"
+        "▪ /set\\_unknown — extra fallback message \\(optional\\)\n"
         "▪ /add\\_more — aur messages/videos add karo\n"
         "▪ /listmedia — media count dekho\n"
         "▪ /clearmedia — sab media clear karo\n"
@@ -296,8 +407,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▪ /settings — current config dekho\n"
         "▪ /setbuttons — inline buttons set karo\n"
         "▪ /reset — sab settings delete karo\n\n"
-        "*Pehle group mein /connect karo\\!*\n"
-        "Group se hatane ke liye group mein /disconnect karo\\."
+        "📌 *Welcome format:*\n"
+        "`💗 welcome ×Name× @username`\n\n"
+        "📌 *Gender detection:*\n"
+        "Bot khud male/female decide karta hai \\— kabhi unknown nahi aayega\\!\n\n"
+        "*Pehle group mein /connect karo\\!*"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -314,9 +428,15 @@ async def setup_start(update, context, gender):
     context.user_data["linked"] = linked
     icon = "👦" if gender == "male" else "👧" if gender == "female" else "🧑"
     await update.message.reply_text(
-        f"{icon} *{esc(gender.capitalize())} welcome message likho:*\n"
-        "Placeholders: `{name}`, `{mention}`, `{username}`, `{gender}`\n\n"
-        "Example: `Welcome {name}\\! {gender} member ho aap\\.`",
+        f"{icon} *{esc(gender.capitalize())} welcome message likho:*\n\n"
+        "Placeholders jo use kar sakte ho:\n"
+        "`{name}` — sirf first name\n"
+        "`{username}` — @username\n"
+        "`{mention}` — clickable mention\n"
+        "`{gender}` — male/female label\n\n"
+        "📌 Note: Header auto add hoga:\n"
+        "`💗 welcome ×Name× @username`\n"
+        "Uske neeche aapka message aayega\\.",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     state_map = {"male": WAITING_MALE_MSG, "female": WAITING_FEMALE_MSG, "unknown": WAITING_UNKNOWN_MSG}
@@ -331,10 +451,10 @@ async def recv_gender_msg(update, context):
     gender = context.user_data["gender"]
     preview = esc(smart_truncate(context.user_data["msg"]))
     await update.message.reply_text(
-        f"✅ *Message saved successfully\\!* 🎉\n\n"
-        f"📝 *Your {esc(gender)} welcome message:*\n`{preview}`\n\n"
-        f"🎬 Ab {esc(gender)} ke liye *video bhejo* \\(ya /skip kar sakte ho\\)\n"
-        f"Video bhejte hi *message \\+ video dono save ho jayenge*\\!",
+        f"✅ *Message saved\\!* 🎉\n\n"
+        f"📝 *Preview:*\n`{preview}`\n\n"
+        f"🎬 Ab *video bhejo* \\(ya /skip\\)\n"
+        f"Video ke saath caption mein message show hoga\\!",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     state_map = {"male": WAITING_MALE_VIDEO, "female": WAITING_FEMALE_VIDEO, "unknown": WAITING_UNKNOWN_VIDEO}
@@ -363,9 +483,9 @@ async def recv_gender_video(update, context):
 
     await update.message.reply_text(
         f"✅ *{esc(gender.capitalize())} setup COMPLETE\\!* 🎉\n\n"
-        f"📝 *Messages saved:* `{len(gdata['messages'])}`\n"
-        f"🎬 *Videos saved:* `{len(gdata['videos'])}`\n\n"
-        f"✨ Welcome message \\+ video ready\\!",
+        f"📝 *Messages:* `{len(gdata['messages'])}`\n"
+        f"🎬 *Videos:* `{len(gdata['videos'])}`\n\n"
+        f"Welcome message ready\\!",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     return ConversationHandler.END
@@ -385,10 +505,8 @@ async def skip_video(update, context):
         save_settings(chat_id, settings)
 
     await update.message.reply_text(
-        f"✅ *{esc(gender.capitalize())} message saved \\(no video\\)\\!* 📝\n\n"
-        f"📝 *Total messages:* `{len(gdata['messages'])}`\n"
-        f"🎬 *Video:* Skipped\n\n"
-        f"✨ Welcome message ready\\! \\(bina video ke\\)",
+        f"✅ *{esc(gender.capitalize())} message saved \\(no video\\)\\!*\n\n"
+        f"📝 *Total messages:* `{len(gdata['messages'])}`",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     return ConversationHandler.END
@@ -428,7 +546,7 @@ async def more_gender_callback(update, context):
 async def recv_more_msg(update, context):
     context.user_data["msg"] = update.message.text
     await update.message.reply_text(
-        "✅ *New message noted\\!* 📝\n\nAb *video bhejo* \\(ya /skip\\)",
+        "✅ *New message noted\\!*\n\nAb *video bhejo* \\(ya /skip\\)",
         parse_mode=ParseMode.MARKDOWN_V2
     )
     return WAITING_MORE_VIDEO
@@ -451,7 +569,7 @@ async def recv_more_video(update, context):
         save_settings(chat_id, settings)
 
     await update.message.reply_text(
-        f"✅ *New media added for {esc(gender.capitalize())}\\!* 🎉\n\n"
+        f"✅ *New media added for {esc(gender.capitalize())}\\!*\n\n"
         f"📝 Total messages: `{len(gdata['messages'])}`\n"
         f"🎬 Total videos: `{len(gdata['videos'])}`",
         parse_mode=ParseMode.MARKDOWN_V2
@@ -531,11 +649,11 @@ async def cmd_preview(update, context):
     if not linked:
         await update.message.reply_text("❌ Koi group connected nahi.")
         return
-    await update.message.reply_text("🔍 Preview bhej raha hoon \\(DM mein\\)\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text("🔍 Preview bhej raha hoon\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
     for chat_id in linked:
         settings = get_settings(chat_id)
         title = esc(settings.get("chat_title", str(chat_id)))
-        for g in ["male", "female", "unknown"]:
+        for g in ["male", "female"]:
             await update.message.reply_text(
                 f"📌 *{title} \\- {esc(g.capitalize())} Preview:*",
                 parse_mode=ParseMode.MARKDOWN_V2
@@ -555,12 +673,14 @@ async def cmd_settings(update, context):
         title = esc(settings.get("chat_title", str(chat_id)))
         active = "✅ Active" if settings.get("active") else "❌ Inactive"
         btns = len(settings.get("buttons", []))
-        text = f"⚙️ *Settings — {title}*\n\nStatus: {active}\n🔘 Buttons: `{btns}`\n"
+        text = f"⚙️ *Settings — {title}*\n\nStatus: {active}\n🔘 Buttons: `{btns}`\n\n"
+        text += "📊 *Media:*\n"
         for g in ["male", "female", "unknown"]:
             msgs = len(settings.get(g, {}).get("messages", []))
             vids = len(settings.get(g, {}).get("videos", []))
             icon = "👦" if g == "male" else "👧" if g == "female" else "🧑"
             text += f"{icon} {esc(g.capitalize())}: `{msgs}` msgs, `{vids}` vids\n"
+        text += "\n📌 Gender: Bot khud decide karta hai \\(kabhi unknown nahi\\)"
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
 # ---------- /setbuttons ----------
@@ -659,12 +779,14 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     settings = get_settings(chat_id)
     if not settings.get("active"):
         return
+
+    # detect_gender now ALWAYS returns male or female (never unknown)
     gender = await detect_gender(
         new_member.first_name,
         new_member.last_name or "",
         new_member.username or ""
     )
-    logger.info(f"New member: {new_member.first_name} | gender: {gender}")
+    logger.info(f"New member: {new_member.first_name} | detected gender: {gender}")
     await send_welcome(context, chat_id, new_member, gender)
 
 # ---------- Main ----------
@@ -743,7 +865,7 @@ def main():
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset$"))
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🚀 Bot started (send_welcome MarkdownV2 fix applied)")
+    logger.info("🚀 Bot started — Smart gender detection + Screenshot-style welcome")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
