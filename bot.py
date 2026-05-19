@@ -407,10 +407,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▪ /settings — current config dekho\n"
         "▪ /setbuttons — inline buttons set karo\n"
         "▪ /reset — sab settings delete karo\n\n"
-        "📌 *Welcome format:*\n"
-        "`💗 welcome ×Name× @username`\n\n"
-        "📌 *Gender detection:*\n"
-        "Bot khud male/female decide karta hai \\— kabhi unknown nahi aayega\\!\n\n"
         "*Pehle group mein /connect karo\\!*"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
