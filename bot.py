@@ -77,18 +77,19 @@ def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
 
-# ---------- Health Check Server for Leapcell ----------
+# ---------- Health Check Server ----------
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b'OK')
-    
+
     def log_message(self, format, *args):
         pass  # Suppress logs
 
 def run_health_server():
+    """Runs in background thread — HTTP server, no signals needed."""
     try:
         server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
         logger.info("🏥 Health check server started on port 8080")
@@ -847,42 +848,19 @@ def build_app():
     return app
 
 
-# ---------- Bot runner ----------
-_bot_started = False
-_bot_lock = threading.Lock()
-
-def _run_bot_sync():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        tg_app = build_app()
-        logger.info("🚀 Bot started — Smart gender detection + Screenshot-style welcome")
-        tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
-
-def ensure_bot_running():
-    global _bot_started
-    with _bot_lock:
-        if not _bot_started:
-            _bot_started = True
-            t = threading.Thread(target=_run_bot_sync, daemon=True)
-            t.start()
-            logger.info("🤖 Bot thread launched")
-
-
 # =============================================================
-# MAIN - Direct Python Deployment (No Gunicorn)
+# ✅ FIXED MAIN
+# KEY RULE: run_polling() MUST run in the MAIN thread.
+# Signal handlers (SIGINT, SIGTERM) only work in main thread.
+# Health server goes to background thread — it's fine there.
 # =============================================================
 if __name__ == "__main__":
-    # Start health check server
+    # ✅ Step 1: Health server → background daemon thread
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
-    
-    # Start bot
-    ensure_bot_running()
-    
-    # Keep main thread alive
-    import time
-    while True:
-        time.sleep(60)
+
+    # ✅ Step 2: Bot polling → MAIN thread (signal handlers work here)
+    logger.info("🚀 Bot starting in main thread...")
+    tg_app = build_app()
+    tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # No need for sleep loop — run_polling blocks until shutdown
