@@ -2,6 +2,7 @@
 """
 Welcome Bot Gender Detection + Full Feature Set
 Updated: Smart gender detection (never unknown fallback) + new welcome format
+Added: Health check server for Leapcell deployment
 """
 
 import os
@@ -9,6 +10,7 @@ import json
 import logging
 import random
 import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
@@ -80,6 +82,30 @@ def delete_settings(chat_id):
 def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
+
+# ---------- Health Check Server for Leapcell ----------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Suppress logs to avoid noise
+        pass
+
+def run_health_server():
+    try:
+        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+        logger.info("🏥 Health check server started on port 8080")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
 
 # ---------- GROQ Smart Gender Detection ----------
 # Known Indian female names (quick lookup before API call)
@@ -191,14 +217,10 @@ def smart_truncate(text: str, limit: int = 100) -> str:
 
 
 # ---------- send_welcome — Screenshot style format ----------
-# Format: 💗 welcome ×{name}× @{username}
-# Video comes WITH caption (video between greeting + message body)
-
 async def send_welcome(context, chat_id, user, gender_key):
     settings = get_settings(chat_id)
 
     # If gender_key is "unknown", randomly pick male or female
-    # (This is extra safety — detect_gender should never return unknown now)
     if gender_key == "unknown":
         gender_key = random.choice(["male", "female"])
         logger.info(f"Unknown gender → randomly using: {gender_key}")
@@ -220,10 +242,6 @@ async def send_welcome(context, chat_id, user, gender_key):
     # Build display name
     display_name = user.first_name
     username_str = f"@{user.username}" if user.username else user.first_name
-
-    # ---- Screenshot-style header ----
-    # 💗 welcome ×{name}× @{username}
-    # This is built in MarkdownV2
 
     if not messages:
         # No custom message — send screenshot-style default
@@ -258,8 +276,6 @@ async def send_welcome(context, chat_id, user, gender_key):
     body_md = mention_md.join([esc(p) for p in parts])
 
     # Step 3: Build full caption with screenshot-style header
-    # Header: 💗 welcome ×Name× @username
-    # Then the custom message body below
     header_md = f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
     full_msg = f"{header_md}\n\n{body_md}"
 
@@ -269,7 +285,6 @@ async def send_welcome(context, chat_id, user, gender_key):
 
     try:
         if video_id:
-            # Video with caption = message appears WITH the video (between header style)
             await context.bot.send_video(
                 chat_id=chat_id,
                 video=video_id,
@@ -287,7 +302,7 @@ async def send_welcome(context, chat_id, user, gender_key):
         logger.info(f"✅ Welcome sent to {chat_id} for {display_name} ({gender_key})")
 
     except Exception as e:
-        logger.error(f"MarkdownV2 parse error: {e} | msg: {full_msg}")
+        logger.error(f"MarkdownV2 parse error: {e}")
         # Plain text fallback
         try:
             plain_fallback = f"💗 welcome ×{display_name}× {username_str}\n\n"
@@ -776,7 +791,6 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not settings.get("active"):
         return
 
-    # detect_gender now ALWAYS returns male or female (never unknown)
     gender = await detect_gender(
         new_member.first_name,
         new_member.last_name or "",
@@ -787,6 +801,10 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ---------- Main ----------
 def main():
+    # Start health check server in background thread
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
     app = Application.builder().token(BOT_TOKEN).build()
 
     male_conv = ConversationHandler(
