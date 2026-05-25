@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Welcome Bot Gender Detection + Full Feature Set
-Updated: Smart gender detection (never unknown fallback) + new welcome format
-Added: Health check server for Leapcell deployment
+Fixed: Proper WSGI entry point for Gunicorn (Leapcell deployment)
 """
 
 import os
@@ -10,7 +9,7 @@ import json
 import logging
 import random
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
@@ -83,32 +82,7 @@ def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
 
-# ---------- Health Check Server for Leapcell ----------
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        # Suppress logs to avoid noise
-        pass
-
-def run_health_server():
-    try:
-        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-        logger.info("🏥 Health check server started on port 8080")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"Health server error: {e}")
-
 # ---------- GROQ Smart Gender Detection ----------
-# Known Indian female names (quick lookup before API call)
 KNOWN_FEMALE_NAMES = {
     'pinky', 'sweety', 'baby', 'gudiya', 'soni', 'pappi',
     'rinky', 'tinku', 'rani', 'priya', 'kavya', 'neha',
@@ -127,22 +101,16 @@ KNOWN_MALE_NAMES = {
     'vikas', 'ajay', 'vijay', 'sanjay', 'manoj', 'deepak',
     'rakesh', 'naresh', 'dinesh', 'ganesh', 'mahesh', 'ritesh',
     'mukesh', 'rupesh', 'prakash', 'aakash', 'subhash', 'kailash',
-    'mohit', 'rohit', 'lalit', 'sumit', 'pulkit', 'ankit',
-    'nikhil', 'akhil', 'sahil', 'rahul', 'vishal', 'kushal',
+    'mohit', 'lalit', 'sumit', 'pulkit', 'ankit',
+    'nikhil', 'akhil', 'sahil', 'vishal', 'kushal',
     'danish', 'manish', 'harish', 'satish', 'ashish', 'jagdish',
     'amir', 'bilal', 'imran', 'faisal', 'hassan', 'ali',
     'aryan', 'ishan', 'krishna', 'shyam', 'ram', 'shiv'
 }
 
 async def detect_gender(first_name: str, last_name: str = "", username: str = "") -> str:
-    """
-    Smart gender detection using name lookup + GROQ LLM.
-    NEVER returns 'unknown' — always forces male or female decision.
-    Falls back to random if truly ambiguous.
-    """
     name_lower = first_name.lower().strip()
 
-    # Step 1: Quick local lookup
     if name_lower in KNOWN_FEMALE_NAMES:
         logger.info(f"Local lookup → female: {first_name}")
         return "female"
@@ -151,7 +119,6 @@ async def detect_gender(first_name: str, last_name: str = "", username: str = ""
         logger.info(f"Local lookup → male: {first_name}")
         return "male"
 
-    # Step 2: GROQ smart detection — force a decision
     try:
         full_name = f"{first_name} {last_name}".strip()
         prompt = (
@@ -194,13 +161,11 @@ async def detect_gender(first_name: str, last_name: str = "", username: str = ""
         elif "male" in result:
             return "male"
         else:
-            # GROQ returned something unexpected — random fallback
             chosen = random.choice(["male", "female"])
-            logger.warning(f"GROQ unexpected response '{result}' for '{full_name}' → random: {chosen}")
+            logger.warning(f"GROQ unexpected response '{result}' → random: {chosen}")
             return chosen
 
     except Exception as e:
-        # API error — random fallback (never unknown)
         chosen = random.choice(["male", "female"])
         logger.error(f"GROQ error: {e} → random fallback: {chosen}")
         return chosen
@@ -216,18 +181,16 @@ def smart_truncate(text: str, limit: int = 100) -> str:
     return text[:limit] + "..."
 
 
-# ---------- send_welcome — Screenshot style format ----------
+# ---------- send_welcome ----------
 async def send_welcome(context, chat_id, user, gender_key):
     settings = get_settings(chat_id)
 
-    # If gender_key is "unknown", randomly pick male or female
     if gender_key == "unknown":
         gender_key = random.choice(["male", "female"])
         logger.info(f"Unknown gender → randomly using: {gender_key}")
 
     gdata = settings.get(gender_key, {"messages": [], "videos": []})
 
-    # Fallback: if chosen gender has no media, try the other
     if not gdata.get("messages") and not gdata.get("videos"):
         alt = "female" if gender_key == "male" else "male"
         alt_data = settings.get(alt, {"messages": [], "videos": []})
@@ -239,15 +202,11 @@ async def send_welcome(context, chat_id, user, gender_key):
     videos = gdata.get("videos", [])
     buttons = settings.get("buttons", [])
 
-    # Build display name
     display_name = user.first_name
     username_str = f"@{user.username}" if user.username else user.first_name
 
     if not messages:
-        # No custom message — send screenshot-style default
-        header = (
-            f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
-        )
+        header = f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -261,21 +220,17 @@ async def send_welcome(context, chat_id, user, gender_key):
             )
         return
 
-    # Pick random message template
     msg_template = random.choice(messages)
 
-    # Step 1: Replace placeholders with plain text
     plain = msg_template
     plain = plain.replace("{name}", display_name)
     plain = plain.replace("{username}", username_str)
     plain = plain.replace("{gender}", "👦 Male" if gender_key == "male" else "👧 Female")
 
-    # Step 2: Split on {mention} and handle separately
     parts = plain.split("{mention}")
     mention_md = f"[{esc(display_name)}](tg://user?id={user.id})"
     body_md = mention_md.join([esc(p) for p in parts])
 
-    # Step 3: Build full caption with screenshot-style header
     header_md = f"💗 welcome ×{esc(display_name)}× {esc(username_str)}"
     full_msg = f"{header_md}\n\n{body_md}"
 
@@ -303,7 +258,6 @@ async def send_welcome(context, chat_id, user, gender_key):
 
     except Exception as e:
         logger.error(f"MarkdownV2 parse error: {e}")
-        # Plain text fallback
         try:
             plain_fallback = f"💗 welcome ×{display_name}× {username_str}\n\n"
             plain_fallback += msg_template
@@ -799,12 +753,9 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"New member: {new_member.first_name} | detected gender: {gender}")
     await send_welcome(context, chat_id, new_member, gender)
 
-# ---------- Main ----------
-def main():
-    # Start health check server in background thread
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-    
+
+# ---------- Build Telegram App ----------
+def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
 
     male_conv = ConversationHandler(
@@ -879,8 +830,58 @@ def main():
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^(confirm|cancel)_reset$"))
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🚀 Bot started — Smart gender detection + Screenshot-style welcome")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    return app
 
+
+# ---------- Bot runner in background thread ----------
+_bot_started = False
+_bot_lock = threading.Lock()
+
+def _run_bot_sync():
+    """Run the Telegram bot in its own event loop (blocking)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        tg_app = build_app()
+        logger.info("🚀 Bot started — Smart gender detection + Screenshot-style welcome")
+        tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+
+def ensure_bot_running():
+    global _bot_started
+    with _bot_lock:
+        if not _bot_started:
+            _bot_started = True
+            t = threading.Thread(target=_run_bot_sync, daemon=True)
+            t.start()
+            logger.info("🤖 Bot thread launched")
+
+
+# =============================================================
+# WSGI entry point — Gunicorn calls this (Leapcell serverless)
+# =============================================================
+def application(environ, start_response):
+    """WSGI callable for Gunicorn. Keeps bot alive + serves health checks."""
+    ensure_bot_running()
+
+    path = environ.get("PATH_INFO", "/")
+    status = "200 OK"
+    body = b"OK"
+
+    start_response(status, [
+        ("Content-Type", "text/plain"),
+        ("Content-Length", str(len(body))),
+    ])
+    return [body]
+
+
+# =============================================================
+# Direct run (python app.py) — keeps original behaviour
+# =============================================================
 if __name__ == "__main__":
-    main()
+    ensure_bot_running()
+    # Keep main thread alive
+    import time
+    while True:
+        time.sleep(60)
