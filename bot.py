@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import signal
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
@@ -184,7 +185,6 @@ async def detect_gender(first_name: str, last_name: str = "", username: str = ""
         logger.error(f"GROQ error: {e} → random fallback: {chosen}")
         return chosen
 
-
 # ---------- Helper ----------
 def esc(text: str) -> str:
     return escape_markdown(text, version=2)
@@ -298,7 +298,6 @@ async def send_welcome(context, chat_id, user, gender_key):
                 chat_id=chat_id,
                 text=f"💗 welcome ×{display_name}× {username_str}"
             )
-
 
 # ---------- Conversation States ----------
 WAITING_MALE_MSG, WAITING_MALE_VIDEO = 1, 2
@@ -766,7 +765,6 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"New member: {new_member.first_name} | detected gender: {gender}")
     await send_welcome(context, chat_id, new_member, gender)
 
-
 # ---------- Build Telegram App ----------
 def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -815,7 +813,7 @@ def build_app():
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True  # Fixed warning
+        per_message=True
     )
     button_conv = ConversationHandler(
         entry_points=[CommandHandler("setbuttons", cmd_setbuttons)],
@@ -846,23 +844,29 @@ def build_app():
 
     return app
 
-
 # =============================================================
-# ✅ FINAL FIXED MAIN - Bot in MAIN THREAD, Health in BACKGROUND
+# ✅ TANGER CLOUD MAIN - Signal handlers disabled
 # =============================================================
 if __name__ == "__main__":
-    # Fix for signal handler issue
+    # Fix for Tanger Cloud - disable signal handlers
     try:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     except:
         pass
     
-    # Start health server in background daemon thread
+    # Start health server in background thread
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
     
-    # Start bot in MAIN THREAD (NO THREAD HERE!)
-    logger.info("🚀 Bot starting in main thread...")
+    # Create new event loop for Tanger
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start bot - KEY: stop_signals=[] disables signal handlers
+    logger.info("🚀 Bot starting on Tanger Cloud...")
     bot_app = build_app()
-    bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    bot_app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        stop_signals=[]  # ← This fixes the error on Tanger Cloud
+    )
