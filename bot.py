@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import threading
-import asyncio
+import signal
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
@@ -86,10 +86,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'OK')
 
     def log_message(self, format, *args):
-        pass  # Suppress logs
+        pass
 
 def run_health_server():
-    """Runs in background thread — HTTP server, no signals needed."""
     try:
         server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
         logger.info("🏥 Health check server started on port 8080")
@@ -194,7 +193,6 @@ def smart_truncate(text: str, limit: int = 100) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
-
 
 # ---------- send_welcome ----------
 async def send_welcome(context, chat_id, user, gender_key):
@@ -817,7 +815,7 @@ def build_app():
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True  # ✅ FIXED: Added to remove warning
+        per_message=True  # Fixed warning
     )
     button_conv = ConversationHandler(
         entry_points=[CommandHandler("setbuttons", cmd_setbuttons)],
@@ -850,19 +848,21 @@ def build_app():
 
 
 # =============================================================
-# ✅ FIXED MAIN - Bot runs in main thread, health server in background
+# ✅ FINAL FIXED MAIN - Bot in MAIN THREAD, Health in BACKGROUND
 # =============================================================
 if __name__ == "__main__":
-    import signal
+    # Fix for signal handler issue
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    except:
+        pass
     
     # Start health server in background daemon thread
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
     
-    # Build and run bot in main thread
+    # Start bot in MAIN THREAD (NO THREAD HERE!)
     logger.info("🚀 Bot starting in main thread...")
-    tg_app = build_app()
-    
-    # This runs the bot and handles signals properly
-    # run_polling blocks until bot is stopped (Ctrl+C or SIGTERM)
-    tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    bot_app = build_app()
+    bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
