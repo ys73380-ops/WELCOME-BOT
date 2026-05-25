@@ -660,7 +660,7 @@ async def cmd_settings(update, context):
             vids = len(settings.get(g, {}).get("videos", []))
             icon = "👦" if g == "male" else "👧" if g == "female" else "🧑"
             text += f"{icon} {esc(g.capitalize())}: `{msgs}` msgs, `{vids}` vids\n"
-        text += "\n📌 Gender: Bot khud decide karta hai \\(kabhi unknown nahi\\)"
+        text += "\n📌 Gender: Bot khud decide karta hai (kabhi unknown nahi)"
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
 # ---------- /setbuttons ----------
@@ -816,7 +816,8 @@ def build_app():
                 CommandHandler("skip", skip_video)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=True  # ✅ FIXED: Added to remove warning
     )
     button_conv = ConversationHandler(
         entry_points=[CommandHandler("setbuttons", cmd_setbuttons)],
@@ -849,18 +850,19 @@ def build_app():
 
 
 # =============================================================
-# ✅ FIXED MAIN
-# KEY RULE: run_polling() MUST run in the MAIN thread.
-# Signal handlers (SIGINT, SIGTERM) only work in main thread.
-# Health server goes to background thread — it's fine there.
+# ✅ FIXED MAIN - Bot runs in main thread, health server in background
 # =============================================================
 if __name__ == "__main__":
-    # ✅ Step 1: Health server → background daemon thread
+    import signal
+    
+    # Start health server in background daemon thread
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
-
-    # ✅ Step 2: Bot polling → MAIN thread (signal handlers work here)
+    
+    # Build and run bot in main thread
     logger.info("🚀 Bot starting in main thread...")
     tg_app = build_app()
+    
+    # This runs the bot and handles signals properly
+    # run_polling blocks until bot is stopped (Ctrl+C or SIGTERM)
     tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
-    # No need for sleep loop — run_polling blocks until shutdown
