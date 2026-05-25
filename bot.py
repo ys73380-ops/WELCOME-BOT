@@ -1,15 +1,10 @@
-#!/usr/bin/env python3
-"""
-Welcome Bot Gender Detection + Full Feature Set
-Fixed: Proper WSGI entry point for Gunicorn (Leapcell deployment)
-"""
-
 import os
 import json
 import logging
 import random
 import threading
 import asyncio
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
@@ -81,6 +76,25 @@ def delete_settings(chat_id):
 def get_linked_chats(user_id):
     data = load_data()
     return [int(cid) for cid, s in data.items() if int(user_id) in [int(x) for x in s.get("admins", [])]]
+
+# ---------- Health Check Server for Leapcell ----------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    
+    def log_message(self, format, *args):
+        pass  # Suppress logs
+
+def run_health_server():
+    try:
+        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+        logger.info("🏥 Health check server started on port 8080")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
 
 # ---------- GROQ Smart Gender Detection ----------
 KNOWN_FEMALE_NAMES = {
@@ -833,12 +847,11 @@ def build_app():
     return app
 
 
-# ---------- Bot runner in background thread ----------
+# ---------- Bot runner ----------
 _bot_started = False
 _bot_lock = threading.Lock()
 
 def _run_bot_sync():
-    """Run the Telegram bot in its own event loop (blocking)."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -859,28 +872,16 @@ def ensure_bot_running():
 
 
 # =============================================================
-# WSGI entry point — Gunicorn calls this (Leapcell serverless)
-# =============================================================
-def application(environ, start_response):
-    """WSGI callable for Gunicorn. Keeps bot alive + serves health checks."""
-    ensure_bot_running()
-
-    path = environ.get("PATH_INFO", "/")
-    status = "200 OK"
-    body = b"OK"
-
-    start_response(status, [
-        ("Content-Type", "text/plain"),
-        ("Content-Length", str(len(body))),
-    ])
-    return [body]
-
-
-# =============================================================
-# Direct run (python app.py) — keeps original behaviour
+# MAIN - Direct Python Deployment (No Gunicorn)
 # =============================================================
 if __name__ == "__main__":
+    # Start health check server
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
+    # Start bot
     ensure_bot_running()
+    
     # Keep main thread alive
     import time
     while True:
