@@ -1,682 +1,747 @@
-import os
 import logging
+import json
+import os
 import random
-import requests
-from threading import Thread
-from flask import Flask
+import unicodedata
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, CallbackQueryHandler
+    Application,
+    CommandHandler,
+    ChatMemberHandler,
+    CallbackQueryHandler,
+    ContextTypes,
 )
-from pymongo import MongoClient
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+DATA_FILE = "bot_data.json"
+
+# ─────────────────────────────────────────────
+# NAME DICTIONARIES (same as before)
+# ─────────────────────────────────────────────
+
+MALE_NAMES = {
+    'raj', 'rajan', 'rajesh', 'rajiv', 'rajat', 'rajendra', 'rajkumar',
+    'kumar', 'kamal', 'karan', 'kartik', 'krishna', 'kuldeep', 'kapil',
+    'singh', 'sunil', 'suresh', 'sanjay', 'sachin', 'sahil', 'siddharth',
+    'sharma', 'shiv', 'shivam', 'shivraj', 'shubham', 'saurabh', 'sonu',
+    'amit', 'amitabh', 'aman', 'ankit', 'ankur', 'anil', 'ajay', 'akash',
+    'akshay', 'arjun', 'aryan', 'arun', 'aditya', 'abhishek', 'abhi',
+    'rahul', 'ravi', 'ram', 'rakesh', 'rohit', 'rohan', 'rishi', 'ritesh',
+    'vikram', 'vijay', 'vikas', 'vivek', 'vishal', 'vicky', 'varun',
+    'mohit', 'manish', 'manoj', 'mahesh', 'mukesh', 'monu', 'mohan',
+    'deepak', 'dinesh', 'dev', 'devesh', 'dhruv', 'diljit', 'dilip',
+    'harsh', 'harish', 'hardik', 'hanuman', 'himanshu', 'hitesh',
+    'nitin', 'nitesh', 'naresh', 'naveen', 'naman', 'navin',
+    'pradeep', 'pratik', 'pramod', 'prabhat', 'parth', 'piyush',
+    'yogesh', 'yash', 'yashodhan',
+    'ganesh', 'gaurav', 'girish', 'gopal', 'golu',
+    'lalit', 'lokesh', 'lucky',
+    'tarun', 'tushar', 'tinku',
+    'umesh', 'uday',
+    'vipin', 'vineet', 'vinod', 'vishnu',
+    'wasim', 'waseem',
+    'zeeshan', 'zahid',
+    'thakur', 'choudhary', 'verma', 'gupta', 'yadav', 'patel',
+    'shah', 'joshi', 'mehta', 'agarwal', 'mittal', 'goel', 'tiwari',
+    'mishra', 'pandey', 'chaudhary', 'chauhan', 'bhatt', 'jain',
+    'boy', 'bhai', 'bhaiya', 'bro', 'king', 'boss', 'mr', 'sir',
+    'master', 'prince', 'sultan', 'lion', 'tiger', 'devil', 'ninja',
+    'rocky', 'tony', 'lucky', 'sunny', 'bunny', 'sonu', 'monu',
+    'golu', 'pappu', 'tinku', 'ladka', 'male', 'wild', 'dark',
+    'shadow', 'hero', 'babu', 'anna', 'dada', 'baba',
+    'ramesh', 'venkat', 'venkatesh', 'ramu', 'krishnamurthy', 'murugan',
+    'selvam', 'senthil', 'prakash', 'subramaniam', 'balaji',
+    'gurpreet', 'gurjit', 'harpreet', 'jaspreet', 'manpreet',
+    'navjot', 'paramjit', 'ranjit', 'surjit', 'amarjit',
+    'mohammad', 'mohammed', 'muhammad', 'md', 'ali', 'khan',
+    'sheikh', 'ansari', 'siddiqui', 'qureshi', 'hussain',
+    'hassan', 'imran', 'irfan', 'danish', 'farhan', 'faisal',
+    'salman', 'adnan', 'asif', 'arif', 'nazim',
+    'zaid', 'aamir', 'amir', 'usman', 'umer',
+}
+
+FEMALE_NAMES = {
+    'priya', 'priyanka', 'preeti', 'puja', 'pooja', 'pallavi', 'payal',
+    'neha', 'nisha', 'nita', 'nitu', 'namrata', 'nidhi', 'nikita',
+    'aarti', 'arti', 'anjali', 'anita', 'ananya', 'asha', 'aisha',
+    'sunita', 'sunidhi', 'sona', 'soni', 'sonam', 'sonali', 'swati',
+    'seema', 'sima', 'shreya', 'shruti', 'shilpa', 'shital', 'shweta',
+    'kavita', 'kajal', 'kiran', 'komal', 'kavya', 'khushi',
+    'rekha', 'reena', 'ritu', 'rima', 'rita', 'roshni', 'radha',
+    'meena', 'megha', 'monika', 'madhuri', 'mona', 'mansi',
+    'deepa', 'deepika', 'divya', 'disha', 'diksha',
+    'geeta', 'gita', 'gudiya', 'garima',
+    'heena', 'hema', 'honey',
+    'ishita', 'isha', 'ishani',
+    'jyoti', 'juhi',
+    'lata', 'lakshmi', 'leena',
+    'tanvi', 'tina', 'tanisha', 'twinkle',
+    'usha', 'urvashi',
+    'veena', 'vanita', 'varsha', 'vandana', 'vaishnavi',
+    'yasmeen', 'yasmin',
+    'zara', 'zeenat',
+    'devi', 'kumari', 'saraswati', 'parvati', 'durga', 'kali',
+    'sita', 'gita', 'rita', 'nita', 'mita',
+    'sonal', 'monal', 'sheena', 'teena',
+    'sangeeta', 'sangita', 'savita', 'smita', 'amrita', 'mamta',
+    'sudha', 'subha', 'alka', 'anupama',
+    'kamala', 'kamali', 'meenakshi', 'revathi',
+    'sumathi', 'bharati', 'vijayalakshmi', 'saraswathi',
+    'padmavathi', 'annapurna', 'bhavani',
+    'jasleen', 'harleen', 'navneet', 'parmeet', 'jasveen',
+    'fatima', 'fathima', 'ayesha', 'zainab', 'rukhsar',
+    'shabnam', 'sana', 'sara', 'sarah', 'noor', 'hina', 'asma',
+    'farida', 'reshma', 'nagma', 'nasreen', 'rubina', 'ruksana',
+    'samina', 'tahira', 'zubaida',
+    'girl', 'didi', 'behen', 'miss', 'mrs', 'ms', 'lady',
+    'queen', 'princess', 'ladki', 'female', 'sweety', 'baby',
+    'pinky', 'rinky', 'bittu',
+}
+
+FEMALE_ENDINGS = (
+    'bai', 'bala', 'devi', 'kumari', 'laxmi', 'wati', 'mati',
+    'priya', 'nita', 'mala', 'vati', 'shree', 'shri',
+    'amma', 'akka', 'chechi', 'ben', 'bhen',
+)
+
+MALE_ENDINGS = (
+    'esh', 'ash', 'ish', 'ush',
+    'raj', 'deep', 'jeet', 'jit',
+    'inder', 'vir', 'bir',
+    'bhai', 'anna', 'dada',
+)
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ===================== CONFIG =====================
-BOT_TOKEN = "8634101836:AAGzYMAtCVYf4KaG_pq15T2q_snOgR1RWbs"
-GROQ_API_KEY = "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"
-MONGO_URL = "mongodb+srv://sys73380_db_uer:hUDwAON8eE8RvG2A@cluster0.vek5qdm.mongodb.net/?appName=Cluster0"
 
-# ===================== MONGODB =====================
-try:
-    client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-    client.server_info()
-    db = client["welcomebot"]
-    settings_col = db["settings"]
-    group_col = db["groups"]
-    logger.info("✅ MongoDB connected!")
-except Exception as e:
-    logger.error(f"❌ MongoDB error: {e}")
-    db = None
+# ─────────────────────────────────────────────
+# GROQ AI GENDER DETECTION
+# ─────────────────────────────────────────────
 
-# ===================== FLASK =====================
-flask_app = Flask(__name__)
+async def groq_detect_gender(name: str) -> str:
+    """
+    Groq AI se gender detect karo.
+    Returns: 'male', 'female', ya 'neutral'
+    """
+    if not GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY not set, falling back to neutral")
+        return 'neutral'
 
-@flask_app.route("/")
-def home():
-    return "Bot is running!", 200
+    prompt = f"""You are a gender detection expert for Indian/South Asian names.
+Given the name: "{name}"
 
-@flask_app.route("/ping")
-def ping():
-    return "pong", 200
+Analyze this name and respond with ONLY one word: male, female, or neutral.
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8080, debug=False)
+Rules:
+- If the name is clearly male (Indian, Muslim, Sikh, Hindu male names), say: male
+- If the name is clearly female (Indian, Muslim, Sikh, Hindu female names), say: female
+- If you are genuinely unsure or it's a username/nickname with no clear gender signal, say: neutral
+- Consider all Indian name origins: Hindi, Urdu, Punjabi, Tamil, Telugu, Bengali, Gujarati, Marathi, etc.
+- Do NOT explain. Just one word answer: male, female, or neutral"""
 
-# ===================== GENDER DETECTION =====================
-FEMALE_NAMES = {
-    'pinky','sweety','baby','gudiya','soni','pappi','rinky','tinku','rani',
-    'priya','kavya','neha','pooja','anjali','divya','komal','simran','preeti',
-    'nisha','shweta','riya','aisha','fatima','zara','mehak','sakshi','pallavi',
-    'sneha','swati','mansi','khushi','dimple','rekha','meena','geeta','sunita',
-    'sita','radha','lakshmi','durga','parvati','uma','ananya','ishita','tanya',
-    'renu','mamta','seema','reena','veena','leena','meera','heena','teena',
-    'sarah','emma','olivia','ava','sofia','mia','amelia','chloe','zoya','sana',
-    'iqra','meher','alia','kajal','sri','devi','deepthi','spandana','navya',
-    'sindhu','bindhu','swapna','jyothi','jyoti','mamatha','savitha','savita',
-    'kavitha','geetha','chitra','vani','rohini','saritha',
-    'varsha','prathima','lavanya','bhargavi','soumya','rashmi','soundarya'
-}
-
-MALE_NAMES = {
-    'rahul','rohit','amit','suresh','ramesh','vikram','arjun','raj','ravi',
-    'anil','sunil','kapil','vikas','ajay','vijay','sanjay','manoj','deepak',
-    'rakesh','naresh','dinesh','ganesh','mahesh','ritesh','mukesh','rupesh',
-    'prakash','aakash','subhash','kailash','mohit','lalit','sumit','pulkit',
-    'ankit','nikhil','akhil','sahil','vishal','kushal','danish','manish',
-    'harish','satish','ashish','jagdish','amir','bilal','imran','faisal',
-    'hassan','ali','aryan','ishan','krishna','shyam','ram','shiv','liam',
-    'noah','oliver','elijah','james','william','benjamin','lucas','henry',
-    'rajesh','mahendra','sachin','sharma','verma','gupta','singh','khan',
-    'ansari','nair','menon','pillai','reddy','naidu','babu','raju','teja',
-    'veera','rambabu','varma','sai','prasad'
-}
-
-def detect_gender(first_name, username=""):
-    name = first_name.lower().strip()
-    if name in FEMALE_NAMES:
-        return "female"
-    if name in MALE_NAMES:
-        return "male"
-    if name.endswith(('a','i','ee','u')):
-        if name not in MALE_NAMES:
-            return "female"
-    if name.endswith(('sh','al','it','raj')):
-        if name not in FEMALE_NAMES:
-            return "male"
-    if username:
-        uname = username.lower()
-        if any(w in uname for w in ['girl','miss','sweety','baby']):
-            return "female"
-        if any(w in uname for w in ['boy','mr','master']):
-            return "male"
-    return "male" if random.random() < 0.55 else "female"
-
-# ===================== GROQ AI =====================
-def call_groq_ai(prompt):
     try:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "mixtral-8x7b-32768",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant for a Telegram welcome bot."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 150
-        }
-        res = requests.post(url, headers=headers, json=payload, timeout=10)
-        data = res.json()
-        if "choices" in data and data["choices"]:
-            return data["choices"][0]["message"]["content"]
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama3-8b-8192",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 10,
+                    "temperature": 0.1
+                }
+            )
+            data = response.json()
+            result = data['choices'][0]['message']['content'].strip().lower()
+
+            # Clean result
+            if 'female' in result:
+                return 'female'
+            elif 'male' in result:
+                return 'male'
+            else:
+                return 'neutral'
+
     except Exception as e:
-        logger.error(f"Groq error: {e}")
-    return None
+        logger.error(f"Groq API error: {e}")
+        return 'neutral'
 
-def ai_detect_gender(first_name, username=""):
-    prompt = f'Based on the name "{first_name}"{"and username " + username if username else ""}, is this person male or female? Return ONLY one word: male or female.'
-    result = call_groq_ai(prompt)
-    if result:
-        result = result.lower()
-        if "female" in result:
-            return "female"
-        if "male" in result:
-            return "male"
-    return None
 
-def ai_generate_message(first_name, gender, chat_title):
-    emoji = "👦" if gender == "male" else "👧"
-    word = "brother" if gender == "male" else "sister"
-    prompt = f'Write a short welcome message. Name: {first_name}, Gender: {gender}, Group: {chat_title}. Use {emoji} emoji, call them {word}. Max 100 chars. Return only the message.'
-    result = call_groq_ai(prompt)
-    if result and 10 < len(result) < 200:
-        return result
-    return None
+# ─────────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────────
 
-# ===================== DEFAULT VALUES =====================
-DEFAULT_SETTINGS = {
-    "active": True, "ai_enabled": False,
-    "male_msg": "Welcome brother {name}! 👦",
-    "female_msg": "Welcome sister {name}! 👧",
-    "video_id": None, "photo_id": None, "media_type": None,
-}
-DEFAULT_GROUP = {
-    "connected_admins": [], "welcome_active": True,
-    "custom_male_msg": None, "custom_female_msg": None
-}
-
-# ===================== DB HELPERS =====================
-def get_settings(chat_id):
-    if db is None:
-        return DEFAULT_SETTINGS.copy()
+def normalize_name(name: str) -> str:
     try:
-        doc = settings_col.find_one({"chat_id": chat_id})
-        if not doc:
-            return DEFAULT_SETTINGS.copy()
-        doc.pop("_id", None)
-        return doc
-    except Exception as e:
-        logger.error(f"get_settings error: {e}")
-        return DEFAULT_SETTINGS.copy()
-
-def save_settings(chat_id, settings):
-    if db is None:
-        return
-    try:
-        settings_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": {**settings, "chat_id": chat_id}},
-            upsert=True
-        )
-    except Exception as e:
-        logger.error(f"save_settings error: {e}")
-
-def get_group(chat_id):
-    if db is None:
-        return DEFAULT_GROUP.copy()
-    try:
-        doc = group_col.find_one({"chat_id": chat_id})
-        if not doc:
-            return DEFAULT_GROUP.copy()
-        doc.pop("_id", None)
-        return doc
-    except Exception as e:
-        logger.error(f"get_group error: {e}")
-        return DEFAULT_GROUP.copy()
-
-def save_group(chat_id, group):
-    if db is None:
-        return
-    try:
-        group_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": {**group, "chat_id": chat_id}},
-            upsert=True
-        )
-    except Exception as e:
-        logger.error(f"save_group error: {e}")
-
-def get_user_groups(user_id):
-    if db is None:
-        return []
-    try:
-        docs = list(group_col.find({"connected_admins": user_id}))
-        return docs
-    except Exception as e:
-        logger.error(f"get_user_groups error: {e}")
-        return []
-
-# ===================== MENUS =====================
-async def show_main_menu(update_or_query, context, edit=False):
-    if hasattr(update_or_query, 'effective_user'):
-        user_id = update_or_query.effective_user.id
-    else:
-        user_id = update_or_query.from_user.id
-
-    groups = get_user_groups(user_id)
-
-    if not groups:
-        text = (
-            "<b>🤖 Welcome Bot</b>\n\n"
-            "Koi group connected nahi hai abhi.\n\n"
-            "👉 Apne group mein jao\n"
-            "👉 Bot ko <b>ADMIN</b> banao\n"
-            "👉 <code>/connect</code> command use karo\n"
-            "👉 DM button aayega — click karo\n\n"
-            "Phir yahan sab settings kar sakte ho! ✅"
-        )
-        keyboard = []
-    else:
-        text = "<b>🤖 Welcome Bot</b>\n\nApna group select karo:"
-        keyboard = []
-        for g in groups:
-            gid = g.get("chat_id")
-            try:
-                chat = await context.bot.get_chat(gid)
-                gname = chat.title or str(gid)
-            except:
-                gname = f"Group {gid}"
-            status = "✅" if g.get("welcome_active") else "❌"
-            keyboard.append([InlineKeyboardButton(f"{status} {gname}", callback_data=f"group_{gid}")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if edit:
-        await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
-    else:
-        await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
-
-async def show_group_menu(query, context, group_id):
-    try:
-        chat = await context.bot.get_chat(group_id)
-        gname = chat.title or str(group_id)
+        normalized = unicodedata.normalize('NFKD', name)
+        ascii_name = ''.join(c for c in normalized if not unicodedata.combining(c))
+        cleaned = ''.join(c for c in ascii_name if c.isprintable())
+        return cleaned if cleaned.strip() else name
     except:
-        gname = str(group_id)
+        return name
 
-    settings = get_settings(group_id)
-    grp = get_group(group_id)
 
-    status = "✅ Active" if grp.get("welcome_active") else "❌ Inactive"
-    ai_status = "🤖 ON" if settings.get("ai_enabled") else "OFF"
-    media = settings.get("media_type") or "None"
-    male_msg = str(grp.get('custom_male_msg') or settings.get('male_msg', ''))[:50]
-    female_msg = str(grp.get('custom_female_msg') or settings.get('female_msg', ''))[:50]
+def detect_gender_local(name: str) -> str:
+    """Fast local dictionary-based detection"""
+    normal_name = normalize_name(name)
+    name_lower = normal_name.lower().strip()
+    words = name_lower.split()
 
-    text = (
-        f"<b>⚙️ {gname}</b>\n\n"
-        f"📊 Status: {status}\n"
-        f"🤖 AI Mode: {ai_status}\n"
-        f"🎬 Media: {media}\n\n"
-        f"👦 Male: {male_msg}\n"
-        f"👧 Female: {female_msg}"
-    )
+    for word in words:
+        clean_word = ''.join(c for c in word if c.isalpha())
+        if clean_word and clean_word in FEMALE_NAMES:
+            return 'female'
 
-    toggle_btn = "❌ Deactivate" if grp.get("welcome_active") else "✅ Activate"
-    ai_btn = "🤖 AI OFF" if settings.get("ai_enabled") else "🤖 AI ON"
+    for word in words:
+        clean_word = ''.join(c for c in word if c.isalpha())
+        if clean_word and clean_word in MALE_NAMES:
+            return 'male'
 
-    keyboard = [
-        [InlineKeyboardButton("👦 Set Male Msg", callback_data=f"setmale_{group_id}"),
-         InlineKeyboardButton("👧 Set Female Msg", callback_data=f"setfemale_{group_id}")],
-        [InlineKeyboardButton("📸 Set Photo/Video", callback_data=f"setmedia_{group_id}"),
-         InlineKeyboardButton("🗑️ Clear Media", callback_data=f"clearmedia_{group_id}")],
-        [InlineKeyboardButton(toggle_btn, callback_data=f"toggle_{group_id}"),
-         InlineKeyboardButton(ai_btn, callback_data=f"aitoggle_{group_id}")],
-        [InlineKeyboardButton("👁️ Preview", callback_data=f"preview_{group_id}"),
-         InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{group_id}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
-    ]
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    for fname in FEMALE_NAMES:
+        if fname in name_lower:
+            return 'female'
 
-# ===================== SEND WELCOME =====================
-async def send_welcome(context, chat_id, new_member):
-    settings = get_settings(chat_id)
-    group = get_group(chat_id)
+    for mname in MALE_NAMES:
+        if mname in name_lower:
+            return 'male'
 
-    if not settings.get("active") or not group.get("welcome_active"):
-        return
+    for ending in FEMALE_ENDINGS:
+        if name_lower.endswith(ending):
+            return 'female'
 
-    first_name = new_member.first_name or "User"
-    username = new_member.username or ""
-    user_id = new_member.id
+    for ending in MALE_ENDINGS:
+        if name_lower.endswith(ending):
+            return 'male'
 
+    return 'neutral'
+
+
+async def detect_gender_smart(name: str) -> str:
+    """
+    2-Step detection:
+    1. Local dictionary (fast)
+    2. Groq AI (agar local neutral aaye)
+    """
+    local_result = detect_gender_local(name)
+    if local_result != 'neutral':
+        logger.info(f"Local detect: '{name}' → {local_result}")
+        return local_result
+
+    # Local ne nahi pakda → Groq AI try karo
+    logger.info(f"Local neutral, trying Groq AI for: '{name}'")
+    ai_result = await groq_detect_gender(name)
+    logger.info(f"Groq AI detect: '{name}' → {ai_result}")
+    return ai_result
+
+
+def replace_vars(text, full_name, username, user_mention, gender):
+    return (text
+            .replace('{name}', full_name)
+            .replace('{username}', username)
+            .replace('{mention}', user_mention)
+            .replace('{gender}', gender))
+
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_data(data):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id_override=None) -> bool:
+    user_id = update.effective_user.id
+    target = chat_id_override or update.effective_chat.id
+    if not chat_id_override and update.effective_chat.type == 'private':
+        return True
     try:
-        chat = await context.bot.get_chat(chat_id)
-        chat_title = chat.title or "Group"
-    except:
-        chat_title = "Group"
-
-    gender = detect_gender(first_name, username)
-
-    if settings.get("ai_enabled"):
-        ai_gender = ai_detect_gender(first_name, username)
-        if ai_gender:
-            gender = ai_gender
-        msg_template = ai_generate_message(first_name, gender, chat_title)
-        if not msg_template:
-            msg_template = settings.get("male_msg") if gender == "male" else settings.get("female_msg")
-    else:
-        if gender == "male" and group.get("custom_male_msg"):
-            msg_template = group["custom_male_msg"]
-        elif gender == "female" and group.get("custom_female_msg"):
-            msg_template = group["custom_female_msg"]
-        else:
-            msg_template = settings.get("male_msg") if gender == "male" else settings.get("female_msg")
-
-    welcome_text = msg_template \
-        .replace("{name}", first_name) \
-        .replace("{username}", f"@{username}" if username else first_name) \
-        .replace("{chat_title}", chat_title) \
-        .replace("{user_id}", str(user_id))
-
-    try:
-        if settings.get("media_type") == "video" and settings.get("video_id"):
-            await context.bot.send_video(chat_id=chat_id, video=settings["video_id"],
-                                         caption=welcome_text, parse_mode="HTML")
-        elif settings.get("media_type") == "photo" and settings.get("photo_id"):
-            await context.bot.send_photo(chat_id=chat_id, photo=settings["photo_id"],
-                                         caption=welcome_text, parse_mode="HTML")
-        else:
-            await context.bot.send_message(chat_id=chat_id, text=welcome_text, parse_mode="HTML")
+        admins = await context.bot.get_chat_administrators(target)
+        return user_id in [a.user.id for a in admins]
     except Exception as e:
-        logger.error(f"send_welcome error: {e}")
+        logger.error(f"Admin check error: {e}")
+        return False
 
-# ===================== /start =====================
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return
 
-    # Deep link se aaya?
-    if context.args and context.args[0].startswith("connect_"):
+def get_connected_chat(user_id: int):
+    return load_data().get('connections', {}).get(str(user_id))
+
+
+def set_connected_chat(user_id: int, chat_id: str):
+    data = load_data()
+    data.setdefault('connections', {})[str(user_id)] = chat_id
+    save_data(data)
+
+
+def remove_connected_chat(user_id: int):
+    data = load_data()
+    data.get('connections', {}).pop(str(user_id), None)
+    save_data(data)
+
+
+async def get_target_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return str(update.effective_chat.id)
+    connected = get_connected_chat(update.effective_user.id)
+    if not connected:
+        await update.message.reply_text(
+            "❌ <b>Koi group connected nahi hai!</b>\n\n"
+            "Apne group mein jaao aur <code>/connect</code> chalao.",
+            parse_mode='HTML'
+        )
+        return None
+    return connected
+
+
+async def send_gender_welcome(context, chat_id: str, user_id: int, full_name: str, username: str, gender: str):
+    user_mention = f'<a href="tg://user?id={user_id}">{full_name}</a>'
+    data = load_data()
+    group_data = data.get(chat_id, {})
+
+    default_msg = {
+        'male':   f"🎉 Welcome {user_mention} bhai! Hamare group mein swagat hai! 🙏",
+        'female': f"🌸 Welcome {user_mention} didi! Hamare group mein swagat hai! 🙏",
+        'neutral': f"👋 Welcome {user_mention}! Hamare group mein swagat hai! 🙏",
+    }
+
+    msg = group_data.get('welcome_messages', {}).get(gender) or default_msg.get(gender, f"👋 Welcome {user_mention}!")
+    msg = replace_vars(msg, full_name, username, user_mention, gender)
+    video_list = group_data.get('welcome_videos', {}).get(gender, [])
+
+    try:
+        if video_list:
+            vd = random.choice(video_list)
+            cap = replace_vars(vd.get('caption', ''), full_name, username, user_mention, gender)
+            final_cap = f"{msg}\n\n{cap}" if cap else msg
+            await context.bot.send_video(
+                chat_id=int(chat_id), video=vd['file_id'],
+                caption=final_cap, parse_mode='HTML'
+            )
+        else:
+            await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"send_gender_welcome error: {e}")
         try:
-            target_chat_id = int(context.args[0].replace("connect_", ""))
-            await do_connect(update, context, target_chat_id)
-            return
-        except Exception as e:
-            logger.error(f"Deep link error: {e}")
+            await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='HTML')
+        except Exception as e2:
+            logger.error(f"Fallback failed: {e2}")
 
-    await show_main_menu(update, context)
 
-# ===================== /connect — SIRF GROUP MEIN =====================
-async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_type = update.effective_chat.type
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+# ─────────────────────────────────────────────
+# COMMANDS
+# ─────────────────────────────────────────────
 
-    # DM mein use kiya toh guide karo
-    if chat_type == "private":
-        await update.message.reply_text(
-            "ℹ️ Yeh command group mein use karo!\n\n"
-            "Steps:\n"
-            "1️⃣ Bot ko group mein ADMIN banao\n"
-            "2️⃣ Group mein <code>/connect</code> likho\n"
-            "3️⃣ Button aayega — click karo\n"
-            "4️⃣ Sab settings yahan DM mein hogi ✅",
-            parse_mode="HTML"
-        )
-        return
-
-    # Bot admin hai?
-    try:
-        bot_info = await context.bot.get_me()
-        bot_member = await context.bot.get_chat_member(chat_id, bot_info.id)
-        if bot_member.status not in ['administrator', 'creator']:
-            await update.message.reply_text("❌ Pehle mujhe group ka ADMIN banao, phir /connect karo!")
-            return
-    except Exception as e:
-        logger.error(f"Bot admin check error: {e}")
-
-    # User admin/owner hai?
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status not in ['creator', 'administrator']:
-            await update.message.reply_text("❌ Sirf group owner/admin /connect kar sakte hain!")
-            return
-    except Exception as e:
-        logger.error(f"User admin check error: {e}")
-        await update.message.reply_text("❌ Error aaya. Bot ko admin banao aur dobara try karo.")
-        return
-
-    bot_info = await context.bot.get_me()
-    deep_link = f"https://t.me/{bot_info.username}?start=connect_{chat_id}"
-    keyboard = [[InlineKeyboardButton("🔗 Bot DM mein Open Karo & Connect", url=deep_link)]]
-
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Button dabao — DM mein group connect ho jayega!",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "👋 <b>Welcome to Gender Welcome Bot!</b>\n\n"
+        "🔗 <b>Setup Steps:</b>\n"
+        "1️⃣ Bot ko group mein Admin banao\n"
+        "2️⃣ Group mein <code>/connect</code> chalao\n"
+        "3️⃣ Bot ke DM mein commands chalao!\n\n"
+        "📋 <b>Commands:</b>\n\n"
+        "🔗 <code>/connect</code> — Group connect karo\n"
+        "🔌 <code>/disconnect</code> — Connection hatao\n\n"
+        "🎬 <code>/setwelcomemv male Aao bhai {name}!</code>\n"
+        "   ↳ Video reply ke saath = video+msg dono set\n"
+        "   ↳ Bina reply ke = sirf msg set\n\n"
+        "🎬 <code>/setwelcomemv female Welcome didi {name}!</code>\n"
+        "   ↳ Same — video reply karo to video bhi set\n\n"
+        "👁 <code>/showpreview</code> — Live preview dekho\n"
+        "🗑 <code>/resetwelcome</code> — Sab reset\n"
+        "🔍 <code>/testgender name</code> — Gender test\n"
+        "👮 <code>/admincheck</code> — Admin check\n\n"
+        "✨ <b>Variables:</b>\n"
+        "<code>{name}</code> — Full name\n"
+        "<code>{username}</code> — @username\n"
+        "<code>{mention}</code> — Clickable mention\n"
+        "<code>{gender}</code> — male/female/neutral\n\n"
+        "🤖 <b>AI Power:</b> Groq AI se smart gender detection!",
+        parse_mode='HTML'
     )
 
-# ===================== CONNECT LOGIC =====================
-async def do_connect(update: Update, context: ContextTypes.DEFAULT_TYPE, target_chat_id: int):
+
+async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user_name = update.effective_user.first_name
 
-    try:
-        member = await context.bot.get_chat_member(target_chat_id, user_id)
-        if member.status not in ['creator', 'administrator']:
-            await update.message.reply_text("❌ Tum us group ke admin/owner nahi ho!")
+    if update.effective_chat.type != 'private':
+        if not await is_admin(update, context):
+            await update.message.reply_text("❌ Sirf admins /connect kar sakte hain!")
             return
-    except Exception as e:
-        logger.error(f"do_connect check error: {e}")
-        await update.message.reply_text("❌ Error aaya. Bot ko group admin banao aur dobara try karo.")
-        return
-
-    group = get_group(target_chat_id)
-    admins = group.get("connected_admins", [])
-    if user_id not in admins:
-        admins.append(user_id)
-    group["connected_admins"] = admins
-    group["welcome_active"] = True
-    save_group(target_chat_id, group)
-
-    settings = get_settings(target_chat_id)
-    settings["active"] = True
-    save_settings(target_chat_id, settings)
-
-    try:
-        chat = await context.bot.get_chat(target_chat_id)
-        chat_title = chat.title or "Group"
-    except:
-        chat_title = "Group"
-
-    await update.message.reply_text(
-        f"🎉 <b>{chat_title}</b> connected!\n\nAb neeche group select karke sab DM se set karo 👇",
-        parse_mode="HTML"
-    )
-    await show_main_menu(update, context)
-
-# ===================== CALLBACK HANDLER =====================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
-
-    if data == "main_menu":
-        await show_main_menu(query, context, edit=True)
-        return
-
-    if data.startswith("group_"):
-        group_id = int(data.replace("group_", ""))
-        context.user_data["selected_group"] = group_id
-        await show_group_menu(query, context, group_id)
-        return
-
-    if data.startswith("toggle_"):
-        group_id = int(data.replace("toggle_", ""))
-        grp = get_group(group_id)
-        grp["welcome_active"] = not grp.get("welcome_active", True)
-        save_group(group_id, grp)
-        settings = get_settings(group_id)
-        settings["active"] = grp["welcome_active"]
-        save_settings(group_id, settings)
-        await show_group_menu(query, context, group_id)
-        return
-
-    if data.startswith("aitoggle_"):
-        group_id = int(data.replace("aitoggle_", ""))
-        settings = get_settings(group_id)
-        settings["ai_enabled"] = not settings.get("ai_enabled", False)
-        save_settings(group_id, settings)
-        await show_group_menu(query, context, group_id)
-        return
-
-    if data.startswith("clearmedia_"):
-        group_id = int(data.replace("clearmedia_", ""))
-        settings = get_settings(group_id)
-        settings["video_id"] = None
-        settings["photo_id"] = None
-        settings["media_type"] = None
-        save_settings(group_id, settings)
-        await query.edit_message_text(
-            "✅ Media clear ho gaya!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"group_{group_id}")]])
-        )
-        return
-
-    if data.startswith("preview_"):
-        group_id = int(data.replace("preview_", ""))
-        await query.edit_message_text("⏳ Preview group mein bhej raha hoon...")
-
-        class FakeUser:
-            first_name = "TestUser"
-            username = "testuser"
-            id = 123456789
-            is_bot = False
-
-        await send_welcome(context, group_id, FakeUser())
-        await query.edit_message_text(
-            "✅ Preview group mein bhej diya!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"group_{group_id}")]])
-        )
-        return
-
-    if data.startswith("disconnect_"):
-        group_id = int(data.replace("disconnect_", ""))
-        grp = get_group(group_id)
-        admins = grp.get("connected_admins", [])
-        if user_id in admins:
-            admins.remove(user_id)
-        grp["connected_admins"] = admins
-        grp["welcome_active"] = False
-        save_group(group_id, grp)
-        settings = get_settings(group_id)
-        settings["active"] = False
-        save_settings(group_id, settings)
-        await query.edit_message_text(
-            "✅ Group disconnect ho gaya!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]])
-        )
-        return
-
-    if data.startswith("setmale_"):
-        group_id = int(data.replace("setmale_", ""))
-        context.user_data["awaiting"] = {"type": "male_msg", "group_id": group_id}
-        await query.edit_message_text(
-            "👦 <b>Male welcome message type karo:</b>\n\n"
-            "Variables:\n"
-            "<code>{name}</code> — naam\n"
-            "<code>{username}</code> — @username\n"
-            "<code>{chat_title}</code> — group naam\n\n"
-            "Example:\n<code>Welcome bhai {name}! 👦 Khush aaye!</code>\n\n"
-            "✍️ Abhi type karo 👇",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"group_{group_id}")]])
-        )
-        return
-
-    if data.startswith("setfemale_"):
-        group_id = int(data.replace("setfemale_", ""))
-        context.user_data["awaiting"] = {"type": "female_msg", "group_id": group_id}
-        await query.edit_message_text(
-            "👧 <b>Female welcome message type karo:</b>\n\n"
-            "Variables:\n"
-            "<code>{name}</code> — naam\n"
-            "<code>{username}</code> — @username\n"
-            "<code>{chat_title}</code> — group naam\n\n"
-            "Example:\n<code>Welcome didi {name}! 👧 Khush aaye!</code>\n\n"
-            "✍️ Abhi type karo 👇",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"group_{group_id}")]])
-        )
-        return
-
-    if data.startswith("setmedia_"):
-        group_id = int(data.replace("setmedia_", ""))
-        context.user_data["awaiting"] = {"type": "media", "group_id": group_id}
-        await query.edit_message_text(
-            "📸 <b>Photo ya Video bhejo:</b>\n\n"
-            "Abhi DM mein photo ya video send karo.\n"
-            "Wo welcome message ke saath group mein jayega! 🎬",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"group_{group_id}")]])
-        )
-        return
-
-# ===================== DM MESSAGE HANDLER =====================
-async def dm_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return
-
-    awaiting = context.user_data.get("awaiting")
-    if not awaiting:
-        await show_main_menu(update, context)
-        return
-
-    atype = awaiting.get("type")
-    group_id = awaiting.get("group_id")
-    context.user_data.pop("awaiting", None)
-
-    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Group", callback_data=f"group_{group_id}")]])
-
-    if atype == "male_msg":
-        msg = update.message.text
-        if not msg:
-            await update.message.reply_text("❌ Text message chahiye!")
-            return
-        grp = get_group(group_id)
-        grp["custom_male_msg"] = msg
-        save_group(group_id, grp)
-        preview = msg.replace('{name}','Rahul').replace('{username}','@rahul').replace('{chat_title}','Group')
+        chat_id = str(update.effective_chat.id)
+        chat_title = update.effective_chat.title
+        set_connected_chat(user_id, chat_id)
         await update.message.reply_text(
-            f"✅ Male message set!\n\n<b>Preview:</b> {preview}",
-            parse_mode="HTML", reply_markup=back_btn
+            f"✅ <b>Connected!</b>\n\n"
+            f"👤 {user_name}\n"
+            f"💬 {chat_title}\n\n"
+            f"Ab DM mein jaao: @{context.bot.username}",
+            parse_mode='HTML'
         )
-        return
-
-    if atype == "female_msg":
-        msg = update.message.text
-        if not msg:
-            await update.message.reply_text("❌ Text message chahiye!")
-            return
-        grp = get_group(group_id)
-        grp["custom_female_msg"] = msg
-        save_group(group_id, grp)
-        preview = msg.replace('{name}','Priya').replace('{username}','@priya').replace('{chat_title}','Group')
-        await update.message.reply_text(
-            f"✅ Female message set!\n\n<b>Preview:</b> {preview}",
-            parse_mode="HTML", reply_markup=back_btn
-        )
-        return
-
-    if atype == "media":
-        msg = update.message
-        settings = get_settings(group_id)
-        if msg.video:
-            settings["video_id"] = msg.video.file_id
-            settings["media_type"] = "video"
-            settings["photo_id"] = None
-            save_settings(group_id, settings)
-            await update.message.reply_text("✅ Video set! Welcome ke saath jayegi. 🎬", reply_markup=back_btn)
-        elif msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/"):
-            settings["video_id"] = msg.document.file_id
-            settings["media_type"] = "video"
-            settings["photo_id"] = None
-            save_settings(group_id, settings)
-            await update.message.reply_text("✅ Video set! Welcome ke saath jayegi. 🎬", reply_markup=back_btn)
-        elif msg.photo:
-            settings["photo_id"] = msg.photo[-1].file_id
-            settings["media_type"] = "photo"
-            settings["video_id"] = None
-            save_settings(group_id, settings)
-            await update.message.reply_text("✅ Photo set! Welcome ke saath jayegi. 🖼️", reply_markup=back_btn)
+    else:
+        connected = get_connected_chat(user_id)
+        if connected:
+            try:
+                chat = await context.bot.get_chat(connected)
+                await update.message.reply_text(
+                    f"✅ <b>Connected:</b> {chat.title}\n"
+                    f"🆔 <code>{connected}</code>",
+                    parse_mode='HTML'
+                )
+            except:
+                await update.message.reply_text(
+                    f"✅ Connected: <code>{connected}</code>", parse_mode='HTML'
+                )
         else:
-            await update.message.reply_text("❌ Photo ya Video bhejo, text nahi!", reply_markup=back_btn)
+            await update.message.reply_text(
+                "❌ Koi group connected nahi!\n"
+                "Group mein jaao aur <code>/connect</code> chalao.",
+                parse_mode='HTML'
+            )
+
+
+async def disconnect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remove_connected_chat(update.effective_user.id)
+    await update.message.reply_text(
+        "✅ Disconnected!\nNaya connect karne ke liye group mein /connect chalao."
+    )
+
+
+# ─────────────────────────────────────────────
+# NEW: /setwelcomemv — MSG + VIDEO EK SAATH
+# ─────────────────────────────────────────────
+
+async def setwelcomemv_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /setwelcomemv male <message>
+    - Agar video reply karo → video + message dono set
+    - Bina reply ke → sirf message set
+    """
+    chat_id = await get_target_chat_id(update, context)
+    if not chat_id:
         return
 
-# ===================== NEW MEMBER HANDLER =====================
-async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.new_chat_members:
+    override = int(chat_id) if update.effective_chat.type == 'private' else None
+    if not await is_admin(update, context, chat_id_override=override):
+        await update.message.reply_text("❌ Only admins can use this!")
         return
-    chat_id = update.effective_chat.id
-    for member in update.message.new_chat_members:
-        if member.is_bot:
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ <b>Usage:</b>\n\n"
+            "📝 <b>Sirf message:</b>\n"
+            "<code>/setwelcomemv male Welcome bhai {name}!</code>\n\n"
+            "🎬 <b>Message + Video (video reply karke):</b>\n"
+            "<code>/setwelcomemv female Welcome didi {name}!</code>\n\n"
+            "🧑 <b>Genders:</b> <code>male</code> | <code>female</code> | <code>neutral</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    gender = context.args[0].lower()
+    if gender not in ['male', 'female', 'neutral']:
+        await update.message.reply_text(
+            "❌ Gender galat hai!\n"
+            "Likho: <code>male</code>, <code>female</code>, ya <code>neutral</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    msg = ' '.join(context.args[1:])
+    data = load_data()
+    group = data.setdefault(chat_id, {})
+
+    # Message set karo
+    group.setdefault('welcome_messages', {})[gender] = msg
+
+    # Video bhi hai? (reply check)
+    video_added = False
+    if update.message.reply_to_message and update.message.reply_to_message.video:
+        video = update.message.reply_to_message.video
+        vlist = group.setdefault('welcome_videos', {}).setdefault(gender, [])
+
+        # Caption = jo message likha hai ya video ki original caption
+        video_caption = update.message.reply_to_message.caption or ''
+        vlist.append({
+            'file_id': video.file_id,
+            'caption': video_caption
+        })
+        video_added = True
+
+    save_data(data)
+
+    emoji = '👨' if gender == 'male' else '👩' if gender == 'female' else '🧑'
+
+    if video_added:
+        vcount = len(data[chat_id]['welcome_videos'][gender])
+        await update.message.reply_text(
+            f"✅ <b>{emoji} {gender.upper()} — Message + Video Set!</b>\n\n"
+            f"📝 <b>Message:</b>\n{msg}\n\n"
+            f"🎬 <b>Video added!</b> Total {gender} videos: <b>{vcount}</b>",
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ <b>{emoji} {gender.upper()} — Message Set!</b>\n\n"
+            f"📝 <b>Message:</b>\n{msg}\n\n"
+            f"💡 <i>Tip: Video bhi add karna ho to kisi video ko reply karke ye command chalao!</i>",
+            parse_mode='HTML'
+        )
+
+
+# ─────────────────────────────────────────────
+# NEW: /showpreview — LIVE PREVIEW
+# ─────────────────────────────────────────────
+
+async def showpreview_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Actual preview bhejta hai — exactly jaisa new member ko milega
+    """
+    chat_id = await get_target_chat_id(update, context)
+    if not chat_id:
+        return
+
+    override = int(chat_id) if update.effective_chat.type == 'private' else None
+    if not await is_admin(update, context, chat_id_override=override):
+        await update.message.reply_text("❌ Only admins can use this!")
+        return
+
+    data = load_data()
+    group_data = data.get(chat_id, {})
+
+    if not group_data:
+        await update.message.reply_text(
+            "ℹ️ Koi settings nahi hain abhi.\n"
+            "Pehle <code>/setwelcomemv</code> se set karo!",
+            parse_mode='HTML'
+        )
+        return
+
+    user = update.effective_user
+    full_name = f"{user.first_name} {user.last_name}".strip() if user.last_name else user.first_name
+    username = f"@{user.username}" if user.username else full_name
+    user_mention = f'<a href="tg://user?id={user.id}">{full_name}</a>'
+
+    try:
+        chat = await context.bot.get_chat(int(chat_id))
+        title = chat.title
+    except:
+        title = chat_id
+
+    # Header
+    await update.message.reply_text(
+        f"👁 <b>PREVIEW — {title}</b>\n\n"
+        f"<i>Neeche exactly waise welcome messages aayenge jaise naye members ko milenge:</i>",
+        parse_mode='HTML'
+    )
+
+    # Preview for each gender
+    for gender in ['male', 'female', 'neutral']:
+        emoji = '👨' if gender == 'male' else '👩' if gender == 'female' else '🧑'
+
+        default_msg = {
+            'male':    f"🎉 Welcome {user_mention} bhai! Hamare group mein swagat hai! 🙏",
+            'female':  f"🌸 Welcome {user_mention} didi! Hamare group mein swagat hai! 🙏",
+            'neutral': f"👋 Welcome {user_mention}! Hamare group mein swagat hai! 🙏",
+        }
+
+        msg_template = group_data.get('welcome_messages', {}).get(gender, '')
+        video_list = group_data.get('welcome_videos', {}).get(gender, [])
+
+        if not msg_template and not video_list:
+            await update.message.reply_text(
+                f"{emoji} <b>{gender.upper()}</b> — ❌ Not set (default use hoga)",
+                parse_mode='HTML'
+            )
             continue
-        await send_welcome(context, chat_id, member)
 
-# ===================== MAIN =====================
+        # Replace vars with admin's own info for preview
+        final_msg = replace_vars(
+            msg_template or default_msg[gender],
+            full_name, username, user_mention, gender
+        )
+
+        await update.message.reply_text(
+            f"{emoji} <b>{gender.upper()} PREVIEW:</b>",
+            parse_mode='HTML'
+        )
+
+        try:
+            if video_list:
+                vd = random.choice(video_list)
+                cap = replace_vars(vd.get('caption', ''), full_name, username, user_mention, gender)
+                final_cap = f"{final_msg}\n\n{cap}" if cap else final_msg
+                await update.message.reply_video(
+                    video=vd['file_id'],
+                    caption=final_cap,
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(final_msg, parse_mode='HTML')
+        except Exception as e:
+            await update.message.reply_text(
+                f"⚠️ Preview error: {e}\n\n📝 Message:\n{final_msg}",
+                parse_mode='HTML'
+            )
+
+
+async def reset_welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = await get_target_chat_id(update, context)
+    if not chat_id:
+        return
+
+    override = int(chat_id) if update.effective_chat.type == 'private' else None
+    if not await is_admin(update, context, chat_id_override=override):
+        await update.message.reply_text("❌ Only admins can use this!")
+        return
+
+    data = load_data()
+    if chat_id in data:
+        data[chat_id] = {}
+        save_data(data)
+
+    await update.message.reply_text(
+        "✅ <b>Saari settings reset ho gayi!</b>\n"
+        "<i>Ab default welcome messages use honge.</i>",
+        parse_mode='HTML'
+    )
+
+
+async def admincheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = await get_target_chat_id(update, context)
+    if not chat_id:
+        return
+
+    try:
+        admins = await context.bot.get_chat_administrators(int(chat_id))
+        is_adm = user_id in [a.user.id for a in admins]
+        status = next((a.status for a in admins if a.user.id == user_id), 'member')
+        await update.message.reply_text(
+            f"👤 {update.effective_user.first_name}\n"
+            f"🆔 <code>{user_id}</code>\n"
+            f"📊 Status: {status}\n"
+            f"👮 Admin: {'Yes ✅' if is_adm else 'No ❌'}",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def testgender_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: <code>/testgender Rahul Singh</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    name = ' '.join(context.args)
+    normalized = normalize_name(name)
+
+    # Local first
+    local_result = detect_gender_local(name)
+    processing_msg = await update.message.reply_text(
+        f"🔍 <b>Gender Test</b>\n\n"
+        f"👤 Name: <b>{name}</b>\n"
+        f"📚 Local Dictionary: <b>{local_result.upper()}</b>\n"
+        f"{'🤖 Groq AI: checking...' if local_result == 'neutral' else ''}",
+        parse_mode='HTML'
+    )
+
+    if local_result == 'neutral' and GROQ_API_KEY:
+        ai_result = await groq_detect_gender(name)
+        final = ai_result
+        source = f"🤖 Groq AI: <b>{ai_result.upper()}</b>"
+    else:
+        final = local_result
+        source = "✅ Local dictionary se mila"
+
+    await processing_msg.edit_text(
+        f"🔍 <b>Gender Test Result</b>\n\n"
+        f"👤 Name: <b>{name}</b>\n"
+        f"✏️ Normalized: <b>{normalized}</b>\n"
+        f"📚 Local: <b>{local_result.upper()}</b>\n"
+        f"{source}\n\n"
+        f"⚡ <b>Final: {final.upper()}</b>",
+        parse_mode='HTML'
+    )
+
+
+# ─────────────────────────────────────────────
+# WELCOME NEW MEMBER — Groq AI for neutral
+# ─────────────────────────────────────────────
+
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.chat_member:
+        return
+
+    cm = update.chat_member
+    old_status = cm.old_chat_member.status
+    new_status = cm.new_chat_member.status
+
+    if old_status not in ['left', 'kicked', 'banned']:
+        return
+    if new_status not in ['member', 'administrator']:
+        return
+
+    new_member = cm.new_chat_member.user
+    chat_id = str(update.effective_chat.id)
+
+    if new_member.is_bot:
+        return
+
+    full_name = (
+        f"{new_member.first_name} {new_member.last_name}".strip()
+        if new_member.last_name
+        else new_member.first_name or "New Member"
+    )
+    username = f"@{new_member.username}" if new_member.username else full_name
+
+    # Smart detection: Local → Groq AI (if neutral)
+    gender = await detect_gender_smart(full_name)
+    logger.info(f"NEW MEMBER: '{full_name}' | final_gender={gender}")
+
+    # Ab seedha welcome bhejo — no buttons needed!
+    await send_gender_welcome(context, chat_id, new_member.id, full_name, username, gender)
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
 def main():
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("✅ Flask server started on port 8080")
+    print("🤖 Starting Gender Welcome Bot...")
+    print(f"🔑 Groq AI: {'✅ Active' if GROQ_API_KEY else '❌ Not configured (set GROQ_API_KEY)'}")
+    print("✅ Bot is running!")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("connect", cmd_connect))  # Group mein chalega
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(
-        filters.ChatType.PRIVATE & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL),
-        dm_message_handler
-    ))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_handler))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("connect", connect_command))
+    application.add_handler(CommandHandler("disconnect", disconnect_command))
+    application.add_handler(CommandHandler("setwelcomemv", setwelcomemv_command))   # NEW
+    application.add_handler(CommandHandler("showpreview", showpreview_command))     # NEW
+    application.add_handler(CommandHandler("resetwelcome", reset_welcome_command))
+    application.add_handler(CommandHandler("admincheck", admincheck_command))
+    application.add_handler(CommandHandler("testgender", testgender_command))
+    application.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    logger.info("🚀 Bot starting...")
-    app.run_polling(drop_pending_updates=True)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
